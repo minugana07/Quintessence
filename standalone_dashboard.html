@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>KSPCB & BBMP Lake Health Early-Warning Command Portal</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        html, body { margin: 0; padding: 0; height: 100%; background: #0b132b; color: #fff; display: flex; flex-direction: column; overflow: hidden; }
+        header { background: #1c2541; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3a506b; flex-shrink: 0; }
+        header h1 { margin: 0; font-size: 20px; color: #48cae4; }
+        .badge { background: #ff4d4d; color: white; padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 13px; }
+        .container { display: flex; flex: 1; height: calc(100vh - 65px); width: 100vw; overflow: hidden; }
+        #map-pane { flex: 1; height: 100%; min-height: 450px; background: #0b132b; position: relative; }
+        /* Zero-Watermark Dark Modes for OpenStreetMap */
+        #map-pane.cyber-dark .leaflet-tile-pane {
+            filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7);
+        }
+        #map-pane.midnight .leaflet-tile-pane {
+            filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(120%);
+        }
+        #map-pane.street .leaflet-tile-pane {
+            filter: none;
+        }
+        #detail-pane {
+            width: 520px;
+            height: 100%;
+            background: #1c2541;
+            padding: 20px;
+            overflow-y: auto;
+            border-left: 2px solid #3a506b;
+            scrollbar-width: thin;
+            scrollbar-color: #3a506b transparent;
+        }
+        #detail-pane::-webkit-scrollbar {
+            width: 6px;
+        }
+        #detail-pane::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #detail-pane::-webkit-scrollbar-thumb {
+            background: #3a506b;
+            border-radius: 4px;
+        }
+        #detail-pane::-webkit-scrollbar-thumb:hover {
+            background: #48cae4;
+        }
+        .card { background: #0b132b; padding: 16px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #3a506b; }
+        .metric-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+        .metric-box { background: #162447; padding: 12px; border-radius: 6px; text-align: center; }
+        .metric-box span { font-size: 12px; color: #8d99ae; display: block; }
+        .metric-box strong { font-size: 20px; color: #00f5d4; }
+        .alert-banner { padding: 12px; border-radius: 6px; margin-bottom: 14px; font-size: 14px; font-weight: 500; }
+        .alert-RED { background: rgba(239, 35, 60, 0.2); border-left: 4px solid #ef233c; color: #ff758f; }
+        .alert-ORANGE { background: rgba(255, 183, 3, 0.2); border-left: 4px solid #ffb703; color: #ffd166; }
+        .alert-GREEN { background: rgba(6, 214, 160, 0.2); border-left: 4px solid #06d6a0; color: #a7c957; }
+        .btn { background: #0077b6; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; }
+        .btn:hover { background: #023e8a; }
+        .chart-box { height: 160px; margin-bottom: 15px; }
+        .pill-btn { background: #1c2541; border: 1px solid #3a506b; color: #48cae4; padding: 5px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; transition: 0.2s; }
+        .pill-btn:hover { background: #0077b6; color: white; }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <h1>KSPCB & BBMP Lake Health Early-Warning Command Portal</h1>
+            <small style="color: #8d99ae;">Domain: Water, Climate & Environment | Standards: KSPCB Urban Lake Criteria | RV College of Engineering</small>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="toggle-sidebar-btn" class="pill-btn" onclick="toggleSidebar()" style="display: none;">📊 Show Lake Panel</button>
+            <div id="live-indicator" class="badge">● LIVE TELEMETRY</div>
+        </div>
+    </header>
+    <div class="container">
+        <div id="map-pane" class="cyber-dark">
+            <div style="position: absolute; bottom: 15px; left: 15px; z-index: 1000; display: flex; gap: 6px; background: rgba(28, 37, 65, 0.9); padding: 5px 10px; border-radius: 8px; border: 1px solid #3a506b; backdrop-filter: blur(4px);">
+                <span style="font-size: 11px; color: #8d99ae; align-self: center; font-weight: bold;">Map Theme:</span>
+                <button class="pill-btn" onclick="setMapTheme('cyber-dark')">🌙 Cyber Dark</button>
+                <button class="pill-btn" onclick="setMapTheme('midnight')">🌌 Midnight</button>
+                <button class="pill-btn" onclick="setMapTheme('street')">🗺️ Street</button>
+            </div>
+        </div>
+        <div id="detail-pane">
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+                <button onclick="toggleSidebar()" style="background: none; border: 1px solid #3a506b; color: #8d99ae; cursor: pointer; font-size: 11px; padding: 3px 8px; border-radius: 4px;">✕ Close Panel</button>
+            </div>
+            <div id="select-prompt" style="color: #8d99ae; text-align: center; margin-top: 50px;">
+                <h3>Click any lake marker on the Bengaluru map</h3>
+                <p>View synchronized sensors, AI diagnosis, and dispatch tickets.</p>
+            </div>
+            <div id="lake-content" style="display: none;">
+                <div id="alert-box" class="alert-banner"></div>
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2 id="lake-title" style="margin: 0; color: #caf0f8;">Lake Details</h2>
+                        <span id="lake-lhi" style="font-size: 24px; font-weight: bold;">--</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; margin-bottom: 8px;">
+                        <small id="lake-ward" style="color: #8d99ae;">Ward: --</small>
+                        <small id="lake-timestamp" style="color: #48cae4; font-weight: 600; font-size: 12px;">🕒 Sampled: --</small>
+                    </div>
+                    <div class="metric-grid">
+                        <div class="metric-box"><span>Temperature</span><strong id="m-temp">-- °C</strong></div>
+                        <div class="metric-box"><span>pH Level</span><strong id="m-ph">--</strong></div>
+                        <div class="metric-box"><span>TDS (Solids)</span><strong id="m-tds">-- ppm</strong></div>
+                        <div class="metric-box"><span>Turbidity</span><strong id="m-turb">-- NTU</strong></div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 1px solid #162447;">
+                        <span id="duty-cycle-badge" style="font-size: 11px; background: rgba(6, 214, 160, 0.15); color: #06d6a0; padding: 3px 8px; border-radius: 10px; font-weight: 500;">⏱️ Sampling Rate: 1 Hour (Normal)</span>
+                        <small style="color: #8d99ae; font-size: 11px;">Telemetry Link: Active</small>
+                    </div>
+                </div>
+                <div class="card">
+                    <h4 style="margin: 0 0 10px 0; color: #48cae4;">Sensor Trends (Last 20 Readings)</h4>
+                    <div class="chart-box"><canvas id="chartTds"></canvas></div>
+                    <div class="chart-box"><canvas id="chartPh"></canvas></div>
+                </div>
+                <button class="btn" onclick="dispatchTicket()">Generate BBMP Field Inspection Ticket</button>
+
+                <!-- AI Lake Analyst Copilot -->
+                <div class="card" style="margin-top: 15px; border-color: #00f5d4;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                        <h4 style="margin: 0; color: #00f5d4;">🤖 AI Lake Analyst Copilot</h4>
+                        <span style="font-size: 11px; background: rgba(0, 245, 212, 0.2); color: #00f5d4; padding: 2px 6px; border-radius: 4px;">KSPCB Grounded</span>
+                    </div>
+                    <div id="copilot-thread" style="background: #162447; border-radius: 6px; padding: 10px; max-height: 180px; overflow-y: auto; font-size: 13px; line-height: 1.5; color: #e0e6ed; margin-bottom: 10px; border: 1px solid #3a506b;">
+                        <div style="color: #8d99ae; font-style: italic;">Ask me anything about this lake's live readings, KSPCB compliance, or action steps...</div>
+                    </div>
+                    
+                    <!-- Quick Question Pills -->
+                    <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px;">
+                        <button class="pill-btn" onclick="askCopilot('Why is this lake in this status?')">Why this status?</button>
+                        <button class="pill-btn" onclick="askCopilot('Is the water safe for fish & wildlife?')">Safe for fish?</button>
+                        <button class="pill-btn" onclick="askCopilot('What immediate action should BBMP take?')">Action protocol</button>
+                    </div>
+
+                    <!-- Chat Input -->
+                    <div style="display: flex; gap: 6px;">
+                        <input id="copilot-input" type="text" placeholder="Ask about this lake..." style="flex: 1; background: #0b132b; border: 1px solid #3a506b; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px;" onkeypress="if(event.key==='Enter') sendCopilotText()" />
+                        <button class="btn" style="width: auto; padding: 8px 14px;" onclick="sendCopilotText()">Ask</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 1. Initialize Map Immediately
+        let map = L.map('map-pane', { zoomControl: true }).setView([12.9650, 77.6400], 12);
+
+        // 2. OpenStreetMap Layer (Zero Watermarks, Ultra Fast, 100% Free)
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        function setMapTheme(theme) {
+            document.getElementById('map-pane').className = theme;
+        }
+
+        // 3. Force container size recalculation to guarantee immediate rendering
+        map.invalidateSize();
+        setTimeout(() => { map.invalidateSize(); }, 250);
+        setTimeout(() => { map.invalidateSize(); }, 750);
+
+        let markers = {};
+        let selectedLakeId = null;
+        let chartTdsInst = null;
+        let chartPhInst = null;
+
+        const colorMap = {
+            'RED': '#ef233c',
+            'ORANGE': '#ffb703',
+            'GREEN': '#06d6a0',
+            'YELLOW': '#ffd166'
+        };
+
+        // Initial lake locations so pins show immediately
+        const defaultLakes = [
+            { lake_id: 'bellandur', name: 'Bellandur Lake', lat: 12.9348, lng: 77.6740, color: 'RED', lhi: 32.0, status: 'CRITICAL' },
+            { lake_id: 'varthur', name: 'Varthur Lake', lat: 12.9406, lng: 77.7466, color: 'ORANGE', lhi: 64.5, status: 'ALERT' },
+            { lake_id: 'sankey', name: 'Sankey Tank', lat: 13.0068, lng: 77.5753, color: 'GREEN', lhi: 92.0, status: 'NORMAL' },
+            { lake_id: 'ulsoor', name: 'Ulsoor Lake', lat: 12.9822, lng: 77.6186, color: 'GREEN', lhi: 88.0, status: 'NORMAL' },
+            { lake_id: 'agara', name: 'Agara Lake', lat: 12.9216, lng: 77.6444, color: 'GREEN', lhi: 90.5, status: 'NORMAL' }
+        ];
+
+        function renderMarkers(lakes) {
+            lakes.forEach(lake => {
+                let color = colorMap[lake.color] || '#06d6a0';
+                if (!markers[lake.lake_id]) {
+                    let marker = L.circleMarker([lake.lat, lake.lng], {
+                        radius: 12,
+                        fillColor: color,
+                        color: '#fff',
+                        weight: 2,
+                        opacity: 1,
+                        fillOpacity: 0.88
+                    }).addTo(map);
+
+                    let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
+                    marker.bindTooltip(`<b>${lake.name}</b><br>LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`, { direction: 'top' });
+                    marker.on('click', () => selectLake(lake.lake_id));
+                    markers[lake.lake_id] = marker;
+                } else {
+                    markers[lake.lake_id].setStyle({ fillColor: color });
+                    let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
+                    markers[lake.lake_id].setTooltipContent(`<b>${lake.name}</b><br>LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`);
+                }
+            });
+        }
+
+        // Render default pins immediately
+        renderMarkers(defaultLakes);
+
+        function fetchLakes() {
+            fetch('http://localhost:8000/api/lakes')
+                .then(res => res.json())
+                .then(lakes => {
+                    if (lakes && lakes.length > 0) {
+                        renderMarkers(lakes);
+                    }
+                })
+                .catch(err => console.error("Error fetching lakes:", err));
+        }
+
+        function jumpToLake(lakeId) {
+            selectLake(lakeId);
+            let lake = defaultLakes.find(l => l.lake_id === lakeId);
+            if (lake) {
+                map.setView([lake.lat, lake.lng], 14, { animate: true });
+            }
+        }
+
+        function toggleSidebar() {
+            let pane = document.getElementById('detail-pane');
+            let btn = document.getElementById('toggle-sidebar-btn');
+            if (pane.style.display === 'none') {
+                pane.style.display = 'block';
+                btn.style.display = 'none';
+            } else {
+                pane.style.display = 'none';
+                btn.style.display = 'inline-block';
+            }
+            setTimeout(() => { map.invalidateSize(); }, 200);
+        }
+
+        function selectLake(lakeId) {
+            selectedLakeId = lakeId;
+            let pane = document.getElementById('detail-pane');
+            pane.style.display = 'block';
+            let btn = document.getElementById('toggle-sidebar-btn');
+            if (btn) btn.style.display = 'none';
+            setTimeout(() => { map.invalidateSize(); }, 150);
+
+            document.getElementById('select-prompt').style.display = 'none';
+            document.getElementById('lake-content').style.display = 'block';
+
+            fetch(`http://localhost:8000/api/lake/${lakeId}`)
+                .then(res => res.json())
+                .then(data => {
+                    let meta = data.meta;
+                    let latest = data.latest;
+
+                    document.getElementById('lake-title').innerText = meta.name;
+                    document.getElementById('lake-ward').innerText = `Ward: ${meta.ward_name} (Ward No: ${meta.ward_no})`;
+                    document.getElementById('lake-lhi').innerText = `LHI: ${meta.lhi}`;
+                    document.getElementById('lake-lhi').style.color = colorMap[meta.color];
+
+                    let alertBox = document.getElementById('alert-box');
+                    alertBox.className = `alert-banner alert-${meta.color}`;
+                    alertBox.innerText = latest ? latest.diagnosis : "No data recorded yet.";
+
+                    if (latest) {
+                        document.getElementById('m-temp').innerText = `${latest.temperature} °C`;
+                        document.getElementById('m-ph').innerText = `${latest.ph}`;
+                        document.getElementById('m-tds').innerText = `${latest.tds} ppm`;
+                        document.getElementById('m-turb').innerText = `${latest.turbidity} NTU`;
+
+                        if (latest.timestamp) {
+                            let d = new Date(latest.timestamp);
+                            let timeStr = !isNaN(d) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : latest.timestamp;
+                            let dateStr = !isNaN(d) ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : "";
+                            document.getElementById('lake-timestamp').innerHTML = `🕒 Sampled: <span style="color:#00f5d4;">${dateStr} ${timeStr}</span>`;
+                        }
+
+                        let dutyBadge = document.getElementById('duty-cycle-badge');
+                        if (latest.status === 'CRITICAL' || latest.status === 'ALERT') {
+                            dutyBadge.style.background = 'rgba(255, 183, 3, 0.2)';
+                            dutyBadge.style.color = '#ffd166';
+                            dutyBadge.innerText = '⚡ Adaptive Mode: Every 15 Mins (Anomaly Active)';
+                        } else {
+                            dutyBadge.style.background = 'rgba(6, 214, 160, 0.15)';
+                            dutyBadge.style.color = '#06d6a0';
+                            dutyBadge.innerText = '⏱️ Sampling Rate: Every 1 Hour (Normal)';
+                        }
+                    } else if (meta.last_updated) {
+                        let d = new Date(meta.last_updated);
+                        let timeStr = !isNaN(d) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : meta.last_updated;
+                        document.getElementById('lake-timestamp').innerHTML = `🕒 Sampled: <span style="color:#00f5d4;">${timeStr}</span>`;
+                    } else {
+                        document.getElementById('lake-timestamp').innerText = `🕒 No Telemetry Yet`;
+                    }
+                    loadCharts(lakeId);
+                });
+        }
+
+        function loadCharts(lakeId) {
+            fetch(`http://localhost:8000/api/lake/${lakeId}/history?limit=20`)
+                .then(res => res.json())
+                .then(history => {
+                    let labels = history.map((h, i) => {
+                        if (h.timestamp) {
+                            let d = new Date(h.timestamp);
+                            return !isNaN(d) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : `#${i + 1}`;
+                        }
+                        return `#${i + 1}`;
+                    });
+                    let tds = history.map(h => h.tds);
+                    let turb = history.map(h => h.turbidity);
+                    let ph = history.map(h => h.ph);
+
+                    if (chartTdsInst) chartTdsInst.destroy();
+                    if (chartPhInst) chartPhInst.destroy();
+
+                    chartTdsInst = new Chart(document.getElementById('chartTds'), {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                { label: 'TDS (ppm)', data: tds, borderColor: '#00f5d4', tension: 0.3 },
+                                { label: 'Turbidity (NTU)', data: turb, borderColor: '#ffb703', tension: 0.3 }
+                            ]
+                        },
+                        options: { responsive: true, maintainAspectRatio: false }
+                    });
+
+                    chartPhInst = new Chart(document.getElementById('chartPh'), {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{ label: 'pH Level', data: ph, borderColor: '#ff758f', tension: 0.3 }]
+                        },
+                        options: { responsive: true, maintainAspectRatio: false }
+                    });
+                });
+        }
+
+        function dispatchTicket() {
+            if (!selectedLakeId) return;
+            fetch('http://localhost:8000/api/ticket', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lake_id: selectedLakeId, reported_by: "BBMP Automated IoT Buoy" })
+            })
+            .then(res => res.json())
+            .then(data => alert(`✅ Ticket Dispatched Successfully!\nTicket ID: ${data.ticket_id}\nAssigned to Ward Assistant Executive Engineer (AEE).`));
+        }
+
+        function askCopilot(question) {
+            if (!selectedLakeId) return;
+            let thread = document.getElementById('copilot-thread');
+            thread.innerHTML += `<div style="margin-top: 8px; color: #00f5d4;"><b>You:</b> ${question}</div>`;
+            thread.innerHTML += `<div id="copilot-loading" style="color: #8d99ae; font-style: italic; margin-top: 4px;">Analyzing live telemetry & KSPCB rules...</div>`;
+            thread.scrollTop = thread.scrollHeight;
+
+            fetch('http://localhost:8000/api/copilot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lake_id: selectedLakeId, question: question })
+            })
+            .then(res => res.json())
+            .then(data => {
+                let loader = document.getElementById('copilot-loading');
+                if (loader) loader.remove();
+                let formatted = data.answer.replace(/\n/g, '<br>');
+                thread.innerHTML += `<div style="margin-top: 6px; padding: 8px; background: rgba(0, 245, 212, 0.08); border-left: 3px solid #00f5d4; border-radius: 4px;">${formatted}</div>`;
+                thread.scrollTop = thread.scrollHeight;
+            });
+        }
+
+        function sendCopilotText() {
+            let input = document.getElementById('copilot-input');
+            let q = input.value.trim();
+            if (!q) return;
+            input.value = '';
+            askCopilot(q);
+        }
+
+        fetchLakes();
+        setInterval(fetchLakes, 4000);
+        setInterval(() => { if (selectedLakeId) selectLake(selectedLakeId); }, 4000);
+    </script>
+</body>
+</html>

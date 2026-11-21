@@ -1,351 +1,244 @@
-/*
- * ======================================================================================
- * PROJECT: Embedded-AI Lake Health Monitoring, Prediction & Early-Warning System
- * TEAM: Quintessence (RV College of Engineering - Experiential Learning Project)
- * HARDWARE: ESP32 Dev Module (DOIT ESP32 DEVKIT V1)
- * SENSORS:
- *   - DS18B20 Waterproof Temp (OneWire Digital on GPIO 4)
- *   - Analog pH Probe (ADC1 - GPIO 34 via 1k/2k voltage divider)
- *   - Analog TDS Probe (ADC1 - GPIO 35)
- *   - Analog Turbidity Probe (ADC1 - GPIO 32 via voltage divider)
- *
- * EMBEDDED AI (TinyML):
- *   - On-chip Decision Tree & Multivariate Anomaly Classifier
- *   - KSPCB-Calibrated Lake Health Index (LHI: 0 - 100)
- *   - Adaptive Duty Cycling: 1 Hour (Normal) / 15 Minutes (Anomaly Active)
- * ======================================================================================
- */
+// ============================================================================
+// ESP32 Complete 4-Sensor Lake Water Quality Monitor
+// Team Quintessence - RV College of Engineering
+// Displays: Temperature (°C), TDS (ppm), Turbidity (NTU), pH, WQI & Status
+//
+// Wiring Summary (Karthe CSE Hardware Setup):
+//   - TDS Sensor       -> Pin D34 (Powered by 3V3, direct signal)
+//   - Turbidity Sensor -> Pin D35 (Powered by VIN 5V, R1 10kΩ + R2 22kΩ divider)
+//   - pH Sensor        -> Pin D32 (Powered by VIN 5V, R3 10kΩ + R4 22kΩ divider)
+//   - DS18B20 Temp     -> Pin D18 (Powered by 3V3, R5 4.7kΩ pull-up to 3V3)
+// ============================================================================
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// ======================================================================================
-// 1. CONFIGURATION: WIFI & BACKEND SERVER
-// ======================================================================================
-const char* WIFI_SSID     = "YOUR_WIFI_NAME";       // Replace with your WiFi / Phone Hotspot name
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";   // Replace with your WiFi password
+// --- 1. PIN DEFINITIONS ---
+#define TDS_PIN        34
+#define TURBIDITY_PIN  35
+#define PH_PIN         32
+#define TEMP_PIN       18
+#define LED_PIN        2    // Onboard status LED
 
-// Put your laptop's Local IP address here (Find via 'ipconfig' in Command Prompt)
-// Example: "http://192.168.1.15:8000/api/telemetry"
-const char* SERVER_URL    = "http://192.168.1.100:8000/api/telemetry";
+// --- 2. ADC & VOLTAGE DIVIDER CONSTANTS ---
+const float VREF               = 3.3;
+const float R_TOP              = 10000.0;  // R1 and R3 (10kΩ)
+const float R_BOTTOM           = 22000.0;  // R2 and R4 (22kΩ)
 
-// Target lake ID on the BBMP Command Portal (e.g. "bellandur", "varthur", "sankey", "ulsoor", "agara")
-const char* LAKE_ID       = "bellandur";
+const float TDS_DIVIDER_RATIO  = 1.0;                            // Direct connection (3V3)
+const float TURB_DIVIDER_RATIO = (R_TOP + R_BOTTOM) / R_BOTTOM;  // 1.4545
+const float PH_DIVIDER_RATIO   = (R_TOP + R_BOTTOM) / R_BOTTOM;  // 1.4545
 
-// SET TO TRUE FOR LAB DEMO (speeds up sleep: 1h -> 20s, 15m -> 5s for fast mentor grading!)
-// SET TO FALSE FOR REAL FIELD DEPLOYMENT (1 hour normal, 15 mins anomaly)
-#define DEMO_MODE true
+// --- 3. CALIBRATION SETTINGS ---
+float tdsKValue        = 1.00;  // TDS probe calibration multiplier
+float turbClearVoltage = 4.15;  // Clear air / clean water baseline = 0 NTU
+float phNeutralVoltage = 2.50;  // PH-4502C 'Po' voltage in pH 7.0 water
+float phSlope          = 0.18;  // Volts per pH unit (~0.18V for PH-4502C)
 
-// ======================================================================================
-// 2. HARDWARE PIN DEFINITIONS (ALL ANALOGS CONFINED TO ADC1 TO PREVENT WIFI CONFLICTS)
-// ======================================================================================
-#define ONE_WIRE_BUS      4   // DS18B20 Digital OneWire Temperature Pin
-#define PH_PIN            34  // Analog pH Sensor (ADC1_CH6)
-#define TDS_PIN           35  // Analog TDS Sensor (ADC1_CH7)
-#define TURB_PIN          32  // Analog Turbidity Sensor (ADC1_CH4)
-#define STATUS_LED        2   // Onboard Blue LED for Telemetry Pulse
+// --- 4. WIFI & DASHBOARD SERVER CONFIG ---
+const char* WIFI_SSID     = "YOUR_WIFI_OR_HOTSPOT";  // Replace with your Hotspot Name
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";    // Replace with your Hotspot Password
+const char* SERVER_URL    = "http://192.168.1.100:8000/api/telemetry"; // Put your laptop IPv4 here!
+const char* BUOY_ID       = "buoy1";                 // Quintessence Buoy #1
 
-// Calibration Constants (Fine-tune with buffer solutions if needed)
-#define PH_CALIBRATION_SLOPE     -5.70  // Typical analog pH probe slope (pH per Volt)
-#define PH_CALIBRATION_OFFSET    16.50  // Neutral offset (V = 2.5V -> pH ~ 7.0)
-#define ADC_VREF                 3.30   // ESP32 ADC Reference Voltage (Volts)
-#define ADC_RESOLUTION           4095.0 // 12-bit ADC (0 - 4095)
+// --- 5. FILTERING & TIMING ---
+#define SAMPLE_COUNT     30
+#define SAMPLE_INTERVAL  40     // Read analog sensors every 40 ms
+#define PRINT_INTERVAL   2000   // Print and send readings every 2 seconds
 
-// OneWire & DallasTemperature setup
-OneWire oneWire(ONE_WIRE_BUS);
+int tdsBuffer[SAMPLE_COUNT];
+int turbBuffer[SAMPLE_COUNT];
+int phBuffer[SAMPLE_COUNT];
+int bufferIndex = 0;
+
+unsigned long lastSampleTime = 0;
+unsigned long lastPrintTime  = 0;
+
+OneWire oneWire(TEMP_PIN);
 DallasTemperature tempSensor(&oneWire);
 
-// RTC Persistent Memory: Survives Deep Sleep cycles
-RTC_DATA_ATTR int bootCount = 0;
-RTC_DATA_ATTR float lastLHI = 95.0;
-RTC_DATA_ATTR bool previousAnomaly = false;
-
-// ======================================================================================
-// 3. EMBEDDED AI (TinyML) ON-CHIP DECISION TREE & KSPCB SCORING
-// ======================================================================================
-struct AnomalyResult {
-    float lhi;
-    const char* status;   // "NORMAL", "ALERT", "CRITICAL", "SENSOR_ERROR"
-    const char* color;    // "GREEN", "ORANGE", "RED", "YELLOW"
-    const char* diagnosis;
-    int nextSleepSeconds;
-};
-
-AnomalyResult runEmbeddedAI(float temp, float ph, float tds, float turb) {
-    AnomalyResult res;
-
-    // Step A: Hardware Glitch / Sensor Boundary Check
-    if (ph < 1.0 || ph > 13.0 || tds <= 0.0 || turb < 0.0 || temp < 5.0 || temp > 48.0) {
-        res.lhi = 0.0;
-        res.status = "SENSOR_ERROR";
-        res.color = "YELLOW";
-        res.diagnosis = "Hardware Glitch / Open Probe: Reading out of physical bounds. Check wiring.";
-        res.nextSleepSeconds = DEMO_MODE ? 5 : 900; // 15 mins for re-probe
-        return res;
+// Median filter to strip electrical spikes from analog readings
+int getMedian(int data[], int length) {
+  int sorted[SAMPLE_COUNT];
+  for (int i = 0; i < length; i++) {
+    sorted[i] = data[i];
+  }
+  for (int i = 0; i < length - 1; i++) {
+    for (int j = 0; j < length - i - 1; j++) {
+      if (sorted[j] > sorted[j + 1]) {
+        int temp = sorted[j];
+        sorted[j] = sorted[j + 1];
+        sorted[j + 1] = temp;
+      }
     }
-
-    // Step B: Calculate KSPCB Sub-Indices
-    float ph_dev = abs(ph - 7.5);
-    float i_ph = max(0.0f, 100.0f - (ph_dev * 35.0f));
-
-    float i_tds;
-    if (tds <= 280.0) {
-        i_tds = 100.0;
-    } else if (tds <= 550.0) {
-        i_tds = 100.0 - ((tds - 280.0) / 270.0) * 40.0;
-    } else {
-        i_tds = max(0.0f, 60.0f - ((tds - 550.0) / 400.0) * 60.0f);
-    }
-
-    float i_turb;
-    if (turb <= 8.0) {
-        i_turb = 100.0;
-    } else if (turb <= 35.0) {
-        i_turb = 100.0 - ((turb - 8.0) / 27.0) * 50.0;
-    } else {
-        i_turb = max(0.0f, 50.0f - ((turb - 35.0) / 65.0) * 50.0f);
-    }
-
-    float i_temp = (temp >= 18.0 && temp <= 29.0) ? 100.0 : 70.0;
-
-    // Composite Lake Health Index (pH: 35%, Turbidity: 30%, TDS: 20%, Temperature: 15%)
-    res.lhi = (0.35 * i_ph) + (0.30 * i_turb) + (0.20 * i_tds) + (0.15 * i_temp);
-
-    // Step C: Multivariate Heuristic Decision Tree (Executes in < 15 microseconds on ESP32)
-    if (tds > 550.0 && turb > 35.0) {
-        res.status = "CRITICAL";
-        res.color = "RED";
-        res.diagnosis = "KSPCB Class E Non-Compliance: Raw Sewage / Sullage Inflow detected (Concurrent TDS and Turbidity surge).";
-        res.nextSleepSeconds = DEMO_MODE ? 5 : 900; // ⚡ ADAPTIVE DUTY CYCLE: 15 Mins
-    } else if (ph > 8.8) {
-        res.status = "ALERT";
-        res.color = "ORANGE";
-        res.diagnosis = "KSPCB Eutrophication Alert: Elevated pH indicates intense daylight CO2 depletion from micro-algae.";
-        res.nextSleepSeconds = DEMO_MODE ? 5 : 900; // ⚡ ADAPTIVE DUTY CYCLE: 15 Mins
-    } else if (ph < 6.0) {
-        res.status = "CRITICAL";
-        res.color = "RED";
-        res.diagnosis = "Industrial Acid Contamination: Hazardous low pH detected.";
-        res.nextSleepSeconds = DEMO_MODE ? 5 : 900; // ⚡ ADAPTIVE DUTY CYCLE: 15 Mins
-    } else if (turb > 35.0) {
-        res.status = "ALERT";
-        res.color = "ORANGE";
-        res.diagnosis = "High Turbidity / Silt Runoff: Construction or storm drain sediment influx.";
-        res.nextSleepSeconds = DEMO_MODE ? 5 : 900; // ⚡ ADAPTIVE DUTY CYCLE: 15 Mins
-    } else if (res.lhi >= 75.0) {
-        res.status = "NORMAL";
-        res.color = "GREEN";
-        res.diagnosis = "KSPCB Class C Compliant: Water quality within safe biological baseline.";
-        res.nextSleepSeconds = DEMO_MODE ? 20 : 3600; // ⏱️ STANDARD DUTY CYCLE: 1 Hour
-    } else {
-        res.status = "ALERT";
-        res.color = "ORANGE";
-        res.diagnosis = "Moderate water quality deviation under KSPCB monitoring limits.";
-        res.nextSleepSeconds = DEMO_MODE ? 5 : 900; // ⚡ ADAPTIVE DUTY CYCLE: 15 Mins
-    }
-
-    return res;
+  }
+  if (length % 2 == 1) {
+    return sorted[length / 2];
+  }
+  return (sorted[length / 2 - 1] + sorted[length / 2]) / 2;
 }
 
-// ======================================================================================
-// 4. SENSOR SAMPLING WITH SEQUENTIAL ISOLATION (ELIMINATES TDS-PH COUPLING NOISE)
-// ======================================================================================
-float readWaterTemperature() {
-    tempSensor.requestTemperatures();
-    float t = tempSensor.getTempCByIndex(0);
-    if (t == DEVICE_DISCONNECTED_C || t < -10.0 || t > 60.0) {
-        Serial.println("[WARN] DS18B20 Disconnected. Using ambient baseline (24.0 C)");
-        return 24.0;
-    }
-    return t;
+// Compute Weighted Water Quality Index (0 = Worst, 100 = Ideal)
+float calculateWQI(float ph, float ntu, float tds, float tempC) {
+  float qPh   = constrain(100.0 - (fabs(ph - 7.0) * 40.0), 0.0, 100.0);
+  float qTurb = constrain(100.0 - (ntu * 0.8), 0.0, 100.0);
+  float qTds  = constrain(100.0 - ((tds / 1000.0) * 100.0), 0.0, 100.0);
+
+  float qTemp = 100.0;
+  if (tempC < 15.0) {
+    qTemp = 100.0 - ((15.0 - tempC) * 6.0);
+  } else if (tempC > 28.0) {
+    qTemp = 100.0 - ((tempC - 28.0) * 8.0);
+  }
+  qTemp = constrain(qTemp, 0.0, 100.0);
+
+  return (qPh * 0.30) + (qTurb * 0.30) + (qTds * 0.25) + (qTemp * 0.15);
 }
 
-// Read analog voltage with oversampling and 12-bit averaging
-float readAnalogVoltage(int pin) {
-    long sum = 0;
-    for (int i = 0; i < 20; i++) {
-        sum += analogRead(pin);
-        delay(5);
-    }
-    float raw = sum / 20.0;
-    return (raw / ADC_RESOLUTION) * ADC_VREF;
+// Classify overall water condition and likely pollution source
+String classifyPollution(float ph, float ntu, float tds, float tempC) {
+  if (ph < 6.0) return "ACIDIC POLLUTION (Industrial / Acid Runoff)";
+  if (ph > 8.8) return "ALKALINE POLLUTION (Detergent / Agricultural Runoff)";
+  if (ntu > 100.0 && tds > 500.0) return "MIXED SEWAGE / URBAN RUNOFF";
+  if (ntu > 100.0) return "SEDIMENT / MUD RUNOFF (High Turbidity)";
+  if (tds > 500.0) return "DISSOLVED CHEMICAL / SALT CONTAMINATION";
+  if (tempC > 32.0) return "THERMAL POLLUTION (Elevated Water Temp)";
+  return "HEALTHY / CLEAN LAKE WATER";
 }
 
-float readPH(float waterTemp) {
-    float voltage = readAnalogVoltage(PH_PIN);
-    // Standard pH conversion formula with temperature compensation
-    float ph = (PH_CALIBRATION_SLOPE * voltage) + PH_CALIBRATION_OFFSET;
-    // Temperature compensation factor: (25.0 - waterTemp) * 0.03
-    ph += (25.0 - waterTemp) * 0.03;
-    return constrain(ph, 0.0, 14.0);
-}
-
-float readTDS(float waterTemp) {
-    float voltage = readAnalogVoltage(TDS_PIN);
-    // Temperature compensation coefficient (standard 2% per deg C above/below 25 C)
-    float compensationCoefficient = 1.0 + 0.02 * (waterTemp - 25.0);
-    float compensationVoltage = voltage / compensationCoefficient;
-    
-    // Non-linear polynomial conversion for standard Keyes/DFRobot TDS probes
-    float tds = (133.42 * pow(compensationVoltage, 3) - 255.86 * pow(compensationVoltage, 2) + 857.39 * compensationVoltage) * 0.5;
-    return max(0.0f, tds);
-}
-
-float readTurbidity() {
-    float voltage = readAnalogVoltage(TURB_PIN);
-    // Standard analog turbidity mapping (5V sensor scaled to 3.3V ADC)
-    // Clear water ~ 2.5V - 3.0V (turbidity < 5 NTU); Opaque muddy water < 1.5V
-    float ntu;
-    if (voltage >= 2.5) {
-        ntu = (3.0 - voltage) * 15.0; // Clean range: 0 - 8 NTU
-    } else {
-        ntu = -1120.4 * pow(voltage, 2) + 5742.3 * voltage - 4352.9;
-    }
-    return constrain(ntu, 0.5, 300.0);
-}
-
-// ======================================================================================
-// 5. WIFI TRANSMISSION ROUTINE
-// ======================================================================================
-bool transmitTelemetry(float temp, float ph, float tds, float turb) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.print("Connecting to WiFi ");
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-            delay(500);
-            Serial.print(".");
-            attempts++;
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println(" CONNECTED!");
-            Serial.print("ESP32 IP: ");
-            Serial.println(WiFi.localIP());
-        } else {
-            Serial.println(" [FAIL] Could not connect to WiFi!");
-            return false;
-        }
-    }
-
+// Transmit live physical readings to the laptop dashboard
+void sendToDashboard(float temp, float ph, float tds, float turb) {
+  if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(SERVER_URL);
     http.addHeader("Content-Type", "application/json");
 
-    // Construct JSON payload
-    char jsonBuffer[256];
-    snprintf(jsonBuffer, sizeof(jsonBuffer),
-        "{\"lake_id\":\"%s\",\"temp\":%.2f,\"ph\":%.2f,\"tds\":%.1f,\"turbidity\":%.1f}",
-        LAKE_ID, temp, ph, tds, turb
+    char jsonPayload[256];
+    snprintf(jsonPayload, sizeof(jsonPayload),
+      "{\"lake_id\":\"%s\",\"temp\":%.2f,\"ph\":%.2f,\"tds\":%.1f,\"turbidity\":%.1f}",
+      BUOY_ID, temp, ph, tds, turb
     );
 
-    Serial.print("Posting to BBMP Portal: ");
-    Serial.println(jsonBuffer);
-
-    int httpCode = http.POST(jsonBuffer);
-    bool success = false;
-
-    if (httpCode > 0) {
-        String response = http.getString();
-        Serial.printf("[HTTP] Status Code: %d | Response: %s\n", httpCode, response.c_str());
-        success = (httpCode == 200 || httpCode == 201);
+    int httpCode = http.POST(jsonPayload);
+    if (httpCode == 200 || httpCode == 201) {
+      Serial.println("   📡 [WiFi] Streamed live to BBMP Command Portal!");
     } else {
-        Serial.printf("[HTTP] POST Failed. Error: %s\n", http.errorToString(httpCode).c_str());
+      Serial.printf("   ⚠️ [WiFi] Server responded with code: %d\n", httpCode);
     }
-
     http.end();
-    return success;
+  }
 }
 
-// ======================================================================================
-// 6. MAIN SETUP (EXECUTES ONCE UPON BOOT / TIMER WAKEUP)
-// ======================================================================================
 void setup() {
-    Serial.begin(115200);
-    delay(1000);
-    bootCount++;
+  Serial.begin(115200);
+  delay(1000);
 
-    pinMode(STATUS_LED, OUTPUT);
-    digitalWrite(STATUS_LED, HIGH); // Turn LED on during sensing & compute
+  pinMode(TDS_PIN, INPUT);
+  pinMode(TURBIDITY_PIN, INPUT);
+  pinMode(PH_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
 
-    Serial.println("\n=======================================================");
-    Serial.println("🌊 Quintessence Embedded-AI Lake Health Buoy Initializing");
-    Serial.printf("📍 Lake Station: %s | Boot Count: %d\n", LAKE_ID, bootCount);
-    Serial.println("=======================================================");
+  tempSensor.begin();
 
-    // Initialize DS18B20
-    tempSensor.begin();
+  Serial.println("\n=======================================================");
+  Serial.println("🌊 Quintessence Physical IoT Buoy #1 Booting Up...");
+  Serial.println("Sensors: DS18B20 (D18), TDS (D34), Turbidity (D35), pH (D32)");
+  Serial.println("=======================================================");
 
-    // 1. Read water temperature first (used for TDS and pH compensation)
-    Serial.println("[1/4] Reading Water Temperature...");
-    float waterTemp = readWaterTemperature();
+  // Connect to WiFi
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-    // Small delay to allow probe settling
-    delay(50);
+  // Pre-fill analog sample buffers on startup for immediate stability
+  for (int i = 0; i < SAMPLE_COUNT; i++) {
+    tdsBuffer[i]  = analogRead(TDS_PIN);
+    turbBuffer[i] = analogRead(TURBIDITY_PIN);
+    phBuffer[i]   = analogRead(PH_PIN);
+    delay(10);
+  }
 
-    // 2. Read pH Probe
-    Serial.println("[2/4] Reading pH Probe...");
-    float phVal = readPH(waterTemp);
-
-    delay(50);
-
-    // 3. Read TDS Probe
-    Serial.println("[3/4] Reading TDS Probe...");
-    float tdsVal = readTDS(waterTemp);
-
-    delay(50);
-
-    // 4. Read Turbidity Probe
-    Serial.println("[4/4] Reading Turbidity Probe...");
-    float turbVal = readTurbidity();
-
-    Serial.println("\n-------------------------------------------------------");
-    Serial.println("📊 RAW SENSOR READINGS CAPTURED:");
-    Serial.printf("   • Water Temperature: %.2f °C\n", waterTemp);
-    Serial.printf("   • pH Level:          %.2f\n", phVal);
-    Serial.printf("   • TDS (Solids):      %.1f ppm\n", tdsVal);
-    Serial.printf("   • Turbidity:         %.1f NTU\n", turbVal);
-    Serial.println("-------------------------------------------------------");
-
-    // Execute TinyML Inference directly on ESP32 CPU (< 15 us)
-    Serial.println("\n🧠 EXECUTING EMBEDDED-AI (TinyML) ON-CHIP INFERENCE...");
-    AnomalyResult ai = runEmbeddedAI(waterTemp, phVal, tdsVal, turbVal);
-
-    Serial.printf("   ↳ Composite LHI:  %.1f / 100\n", ai.lhi);
-    Serial.printf("   ↳ KSPCB Status:   %s (%s)\n", ai.status, ai.color);
-    Serial.printf("   ↳ AI Diagnosis:   %s\n", ai.diagnosis);
-    Serial.printf("   ↳ Next Sampling:  Every %d seconds\n", ai.nextSleepSeconds);
-
-    // Send payload to BBMP Command Portal
-    Serial.println("\n📡 TRANSMITTING TELEMETRY OVER WIFI...");
-    bool sent = transmitTelemetry(waterTemp, phVal, tdsVal, turbVal);
-    if (sent) {
-        Serial.println("✅ Data logged successfully to BBMP Portal!");
-    } else {
-        Serial.println("⚠️ Telemetry cached locally. Will retry on next duty cycle.");
-    }
-
-    digitalWrite(STATUS_LED, LOW); // Turn LED off before sleeping
-
-    // Adaptive Duty Cycle Sleep
-    Serial.println("\n💤 ENTERING ADAPTIVE POWER-SAVE SLEEP...");
-    Serial.printf("Sleeping for %d seconds until next sample.\n", ai.nextSleepSeconds);
-    Serial.flush();
-
-#if DEMO_MODE
-    // In Demo Mode, use standard delay so Serial monitor stays connected and responsive
-    delay(ai.nextSleepSeconds * 1000);
-    // Restart loop automatically
-    ESP.restart();
-#else
-    // In Real Deployment, enter genuine ESP32 Deep Sleep (drops current to ~10 uA)
-    esp_sleep_enable_timer_wakeup((uint64_t)ai.nextSleepSeconds * 1000000ULL);
-    esp_deep_sleep_start();
-#endif
+  Serial.println("✅ Analog filter buffers primed. Starting measurements...\n");
 }
 
 void loop() {
-    // In Deep Sleep mode, the ESP32 reboots into setup() upon timer expiration.
-    // loop() is unused.
+  unsigned long currentMillis = millis();
+
+  // 1. Fill analog sample buffers at 40 ms interval
+  if (currentMillis - lastSampleTime >= SAMPLE_INTERVAL) {
+    lastSampleTime = currentMillis;
+
+    tdsBuffer[bufferIndex]  = analogRead(TDS_PIN);
+    turbBuffer[bufferIndex] = analogRead(TURBIDITY_PIN);
+    phBuffer[bufferIndex]   = analogRead(PH_PIN);
+
+    bufferIndex = (bufferIndex + 1) % SAMPLE_COUNT;
+  }
+
+  // 2. Compute filtered values and print every 2 seconds
+  if (currentMillis - lastPrintTime >= PRINT_INTERVAL) {
+    lastPrintTime = currentMillis;
+
+    digitalWrite(LED_PIN, HIGH); // Pulse LED
+
+    // Get median filtered ADC values
+    int medTdsRaw  = getMedian(tdsBuffer, SAMPLE_COUNT);
+    int medTurbRaw = getMedian(turbBuffer, SAMPLE_COUNT);
+    int medPhRaw   = getMedian(phBuffer, SAMPLE_COUNT);
+
+    // Convert to probe voltages through voltage dividers
+    float vTdsPin  = (medTdsRaw / 4095.0) * VREF;
+    float vTurbPin = (medTurbRaw / 4095.0) * VREF;
+    float vPhPin   = (medPhRaw / 4095.0) * VREF;
+
+    float vTdsActual  = vTdsPin * TDS_DIVIDER_RATIO;
+    float vTurbActual = vTurbPin * TURB_DIVIDER_RATIO;
+    float vPhActual   = vPhPin * PH_DIVIDER_RATIO;
+
+    // Read DS18B20 Temperature
+    tempSensor.requestTemperatures();
+    float waterTemp = tempSensor.getTempCByIndex(0);
+    if (waterTemp == DEVICE_DISCONNECTED_C || waterTemp < -10.0 || waterTemp > 60.0) {
+      waterTemp = 25.0; // Fallback to 25°C baseline if probe disconnected
+    }
+
+    // A. pH Calculation (PH-4502C probe formula)
+    float phValue = 7.0 + ((phNeutralVoltage - vPhActual) / phSlope);
+    phValue = constrain(phValue, 0.0, 14.0);
+
+    // B. Turbidity Calculation (DFRobot / Keyes formula)
+    float ntuValue = 0.0;
+    if (vTurbActual >= turbClearVoltage) {
+      ntuValue = 0.0;
+    } else {
+      ntuValue = -1120.4 * pow(vTurbActual, 2) + 5742.3 * vTurbActual - 4352.9;
+      ntuValue = constrain(ntuValue, 0.0, 1000.0);
+    }
+
+    // C. TDS Calculation with Temperature Compensation
+    float compCoefficient = 1.0 + 0.02 * (waterTemp - 25.0);
+    float compVoltage = vTdsActual / compCoefficient;
+    float tdsValue = (133.42 * pow(compVoltage, 3) - 255.86 * pow(compVoltage, 2) + 857.39 * compVoltage) * 0.5 * tdsKValue;
+    tdsValue = max(0.0f, tdsValue);
+
+    // D. Compute WQI and Pollution Status
+    float wqi = calculateWQI(phValue, ntuValue, tdsValue, waterTemp);
+    String status = classifyPollution(phValue, ntuValue, tdsValue, waterTemp);
+
+    // Print to Serial Monitor
+    Serial.println("-------------------------------------------------------");
+    Serial.printf("🌡️  Water Temp:  %.2f °C\n", waterTemp);
+    Serial.printf("🧪  pH Level:    %.2f  (Sensor Voltage: %.2f V)\n", phValue, vPhActual);
+    Serial.printf("⚡  TDS Solids:  %.1f ppm (Sensor Voltage: %.2f V)\n", tdsValue, vTdsActual);
+    Serial.printf("🌫️  Turbidity:   %.1f NTU (Sensor Voltage: %.2f V)\n", ntuValue, vTurbActual);
+    Serial.printf("📊  WQI Score:   %.1f / 100\n", wqi);
+    Serial.printf("🚨  Condition:   %s\n", status.c_str());
+
+    // Stream physical readings to backend portal
+    sendToDashboard(waterTemp, phValue, tdsValue, ntuValue);
+
+    digitalWrite(LED_PIN, LOW);
+  }
 }

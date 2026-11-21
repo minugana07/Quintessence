@@ -68,21 +68,16 @@ def init_db():
     )
     """)
 
-    # Seed default Bengaluru lakes if empty
+    # Ensure only 1 active physical buoy exists in the system
     cursor.execute("SELECT COUNT(*) FROM lakes")
-    if cursor.fetchone()[0] == 0:
-        default_lakes = [
-            ("bellandur", "Bellandur Lake", "Mahadevapura", 150, 12.9348, 77.6740, "CRITICAL", "RED", 32.0),
-            ("varthur", "Varthur Lake", "Varthur", 149, 12.9406, 77.7466, "ALERT", "ORANGE", 64.5),
-            ("sankey", "Sankey Tank", "Aramane Nagar", 35, 13.0068, 77.5753, "NORMAL", "GREEN", 92.0),
-            ("ulsoor", "Ulsoor Lake", "Halasuru", 90, 12.9822, 77.6186, "NORMAL", "GREEN", 88.0),
-            ("agara", "Agara Lake", "HSR Layout", 174, 12.9216, 77.6444, "NORMAL", "GREEN", 90.5),
-        ]
+    count = cursor.fetchone()[0]
+    if count == 0 or count > 1:
+        cursor.execute("DELETE FROM lakes")
         now = datetime.datetime.now().isoformat()
-        cursor.executemany("""
+        cursor.execute("""
             INSERT INTO lakes (lake_id, name, ward_name, ward_no, lat, lng, status, color, lhi, last_updated)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [(l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], l[8], now) for l in default_lakes])
+        """, ("buoy1", "Quintessence IoT Buoy #1", "Bellandur Lake (Ward 150)", 150, 12.9348, 77.6740, "NORMAL", "GREEN", 92.0, now))
         
     conn.commit()
     conn.close()
@@ -184,6 +179,8 @@ class CopilotQuery(BaseModel):
 @app.post("/api/telemetry")
 def ingest_telemetry(data: TelemetryPayload):
     lake_id = data.lake_id.lower()
+    if lake_id in ["bellandur", "buoy_1", "esp32", "quintessence"]:
+        lake_id = "buoy1"
     now = datetime.datetime.now().isoformat()
     ai_result = calculate_lhi_and_diagnosis(data.temp, data.ph, data.tds, data.turbidity)
     
@@ -378,11 +375,11 @@ def serve_dashboard():
     <body>
         <header>
             <div>
-                <h1>KSPCB & BBMP Lake Health Early-Warning Command Portal</h1>
-                <small style="color: #8d99ae;">Domain: Water, Climate & Environment | Standards: KSPCB Urban Lake Criteria | RV College of Engineering</small>
+                <h1>Quintessence IoT Lake Buoy Command Portal</h1>
+                <small style="color: #8d99ae;">Domain: Real-Time Water Quality IoT | Active Station: Buoy #1 (Bellandur Lake Pilot) | RV College of Engineering</small>
             </div>
             <div style="display: flex; gap: 10px; align-items: center;">
-                <button id="toggle-sidebar-btn" class="pill-btn" onclick="toggleSidebar()" style="display: none;">📊 Show Lake Panel</button>
+                <button id="toggle-sidebar-btn" class="pill-btn" onclick="toggleSidebar()" style="display: none;">📊 Show Buoy Panel</button>
                 <div id="live-indicator" class="badge">● LIVE TELEMETRY</div>
             </div>
         </header>
@@ -460,8 +457,8 @@ def serve_dashboard():
         </div>
 
         <script>
-            // 1. Initialize Map Immediately
-            let map = L.map('map-pane', { zoomControl: true }).setView([12.9650, 77.6400], 12);
+            // 1. Initialize Map Focused on Quintessence Buoy #1 at Bellandur Lake
+            let map = L.map('map-pane', { zoomControl: true }).setView([12.9348, 77.6740], 14);
 
             // 2. OpenStreetMap Layer (Zero Watermarks, Ultra Fast, 100% Free)
             L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -479,7 +476,7 @@ def serve_dashboard():
             setTimeout(() => { map.invalidateSize(); }, 750);
 
             let markers = {};
-            let selectedLakeId = null;
+            let selectedLakeId = 'buoy1';
             let chartTdsInst = null;
             let chartPhInst = null;
 
@@ -490,26 +487,32 @@ def serve_dashboard():
                 'YELLOW': '#ffd166'
             };
 
-            // Initial lake locations so pins show immediately
+            // Single physical hardware buoy deployed at pilot station
             const defaultLakes = [
-                { lake_id: 'bellandur', name: 'Bellandur Lake', lat: 12.9348, lng: 77.6740, color: 'RED', lhi: 32.0, status: 'CRITICAL' },
-                { lake_id: 'varthur', name: 'Varthur Lake', lat: 12.9406, lng: 77.7466, color: 'ORANGE', lhi: 64.5, status: 'ALERT' },
-                { lake_id: 'sankey', name: 'Sankey Tank', lat: 13.0068, lng: 77.5753, color: 'GREEN', lhi: 92.0, status: 'NORMAL' },
-                { lake_id: 'ulsoor', name: 'Ulsoor Lake', lat: 12.9822, lng: 77.6186, color: 'GREEN', lhi: 88.0, status: 'NORMAL' },
-                { lake_id: 'agara', name: 'Agara Lake', lat: 12.9216, lng: 77.6444, color: 'GREEN', lhi: 90.5, status: 'NORMAL' }
+                { lake_id: 'buoy1', name: 'Quintessence IoT Buoy #1 (Bellandur Lake)', lat: 12.9348, lng: 77.6740, color: 'GREEN', lhi: 92.0, status: 'NORMAL' }
             ];
+
+            // Outer radar beacon ping ring for Buoy #1
+            let beaconRing = L.circleMarker([12.9348, 77.6740], {
+                radius: 24,
+                color: '#00f5d4',
+                weight: 1.5,
+                opacity: 0.7,
+                fillColor: '#00f5d4',
+                fillOpacity: 0.12
+            }).addTo(map);
 
             function renderMarkers(lakes) {
                 lakes.forEach(lake => {
                     let color = colorMap[lake.color] || '#06d6a0';
                     if (!markers[lake.lake_id]) {
                         let marker = L.circleMarker([lake.lat, lake.lng], {
-                            radius: 12,
+                            radius: 13,
                             fillColor: color,
                             color: '#fff',
-                            weight: 2,
+                            weight: 2.5,
                             opacity: 1,
-                            fillOpacity: 0.88
+                            fillOpacity: 0.9
                         }).addTo(map);
 
                         let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
@@ -520,11 +523,12 @@ def serve_dashboard():
                         markers[lake.lake_id].setStyle({ fillColor: color });
                         let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
                         markers[lake.lake_id].setTooltipContent(`<b>${lake.name}</b><br>LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`);
+                        if (beaconRing) beaconRing.setStyle({ color: color, fillColor: color });
                     }
                 });
             }
 
-            // Render default pins immediately
+            // Render single buoy immediately
             renderMarkers(defaultLakes);
 
             function fetchLakes() {
@@ -702,8 +706,9 @@ def serve_dashboard():
             }
 
             fetchLakes();
-            setInterval(fetchLakes, 4000);
-            setInterval(() => { if (selectedLakeId) selectLake(selectedLakeId); }, 4000);
+            selectLake('buoy1');
+            setInterval(fetchLakes, 3000);
+            setInterval(() => { selectLake('buoy1'); }, 3000);
         </script>
     </body>
     </html>

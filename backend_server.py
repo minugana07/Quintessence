@@ -427,8 +427,8 @@ def get_gemini_api_key():
     return key if key and key != "your_gemini_api_key_here" else None
 
 def call_gemini_llm(system_instruction: str, user_question: str, api_key: str) -> Optional[str]:
-    # Primary: Gemini 2.5 Flash / Secondary: Gemini 1.5 Flash
-    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    # Active production models on Google AI Studio
+    models = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
     payload = {
         "system_instruction": {
             "parts": [{"text": system_instruction}]

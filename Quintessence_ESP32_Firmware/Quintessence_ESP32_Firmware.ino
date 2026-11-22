@@ -17,23 +17,9 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// ----------------------------------------------------------------------------
 // --- EDGE IMPULSE EMBEDDED AI INFERENCING ---
-// When you export your Edge Impulse model as an Arduino library (.zip):
-// 1. In Arduino IDE: Sketch -> Include Library -> Add .ZIP Library...
-// 2. Select your exported zip (e.g. Quintessence-Lake-AI_inferencing.zip)
-// The header name below matches your project name. If exported with a different
-// name, update the include name accordingly.
-// ----------------------------------------------------------------------------
-#if __has_include(<Quintessence-Lake-AI_inferencing.h>)
-  #include <Quintessence-Lake-AI_inferencing.h>
-  #define HAS_EDGE_IMPULSE 1
-#elif __has_include(<edge-impulse-sdk/classifier/ei_run_classifier.h>)
-  #include <edge-impulse-sdk/classifier/ei_run_classifier.h>
-  #define HAS_EDGE_IMPULSE 1
-#else
-  #define HAS_EDGE_IMPULSE 0
-#endif
+#include <Quintessence_inferencing.h>
+#define HAS_EDGE_IMPULSE 1
 
 // --- 1. PIN DEFINITIONS ---
 #define TDS_PIN        34
@@ -63,8 +49,8 @@ const char* WIFI_SSID     = "Oneplus Nord Minu";  // Change to your phone hotspo
 const char* WIFI_PASSWORD = "minuwireless123";    // Hotspot password
 
 // ⚠️ Put your laptop's Wi-Fi IPv4 address here:
-// Current detected laptop Wi-Fi IP: 172.17.8.142
-const char* SERVER_URL    = "http://172.17.8.142:8000/api/telemetry";
+// Current detected laptop Wi-Fi IP: 10.161.232.18
+const char* SERVER_URL    = "http://10.161.232.18:8000/api/telemetry";
 
 // ⚠️ BUOY_ID MUST match the "ESP32 Buoy ID" on your Dashboard!
 // If dashboard says "buoy1", keep "buoy1". If deploying buoy 2, change to "buoy2".

@@ -87,7 +87,7 @@ init_db()
 # ==========================================================
 # 3. EMBEDDED AI ANOMALY & DIAGNOSTIC ENGINE (KSPCB CALIBRATED)
 # ==========================================================
-def calculate_lhi_and_diagnosis(temp: float, ph: float, tds: float, turb: float):
+def calculate_lhi_and_diagnosis(temp: float, ph: float, tds: float, turb: float, rate_info: Optional[dict] = None):
     # Step A: Check for Sensor Failures / Hardware Glitches
     if ph < 1.0 or ph > 13.0 or tds <= 0.0 or turb < 0.0 or temp < 5.0 or temp > 48.0:
         return {
@@ -120,27 +120,112 @@ def calculate_lhi_and_diagnosis(temp: float, ph: float, tds: float, turb: float)
     # Composite Lake Health Index (pH: 35%, Turbidity: 30%, TDS: 20%, Temperature: 15%)
     lhi = round(0.35 * i_ph + 0.30 * i_turb + 0.20 * i_tds + 0.15 * i_temp, 1)
 
-    # Multi-Variate KSPCB Rules
-    if tds > 550 and turb > 35:
+    # -------------------------------------------------------------
+    # Step C: AVANTHIKA BIOTECH RATE-OF-CHANGE (d/dt) ANALYSIS
+    # Distinguishes natural diurnal photosynthesis from acute chemical dumping
+    # -------------------------------------------------------------
+    acute_surge = False
+    rate_diagnosis = None
+    
+    if rate_info:
+        delta_m = rate_info.get("delta_mins", 0.0)
+        d_ph = rate_info.get("delta_ph", 0.0)
+        d_tds = rate_info.get("delta_tds", 0.0)
+        d_turb = rate_info.get("delta_turb", 0.0)
+        rate_ph_hr = rate_info.get("rate_ph_per_hour", 0.0)
+
+        # 1. ACUTE pH SPIKE (>0.4 change within 15 minutes)
+        if delta_m <= 15.0 and abs(d_ph) >= 0.40:
+            acute_surge = True
+            direction = "alkaline dump" if d_ph > 0 else "acid spill"
+            rate_diagnosis = f"ACUTE CHEMICAL SURGE: pH surged {'+' if d_ph>0 else ''}{d_ph:.2f} in {delta_m:.1f} mins ({direction}). Biological buffering capacity exceeded!"
+        
+        # 2. ACUTE TDS SURGE (>120 ppm jump within 15 minutes)
+        elif delta_m <= 15.0 and d_tds >= 120.0:
+            acute_surge = True
+            rate_diagnosis = f"ACUTE LEACHATE INFLUX: TDS spiked +{d_tds:.0f} ppm in {delta_m:.1f} mins. Sudden dissolved effluent discharge detected!"
+
+        # 3. ACUTE TURBIDITY SURGE (>40 NTU jump within 15 minutes)
+        elif delta_m <= 15.0 and d_turb >= 40.0:
+            acute_surge = True
+            rate_diagnosis = f"ACUTE SEDIMENT PLUME: Turbidity surged +{d_turb:.1f} NTU in {delta_m:.1f} mins. Sludge pipe release or storm breach suspected!"
+
+        # 4. NATURAL DIURNAL PHOTOSYNTHESIS (pH elevated but rising gradually <= 0.35/hour)
+        elif 8.0 <= ph <= 8.9 and 0.0 < rate_ph_hr <= 0.35 and delta_m >= 3.0:
+            rate_diagnosis = f"Natural Diurnal Photosynthesis: Gradual daytime CO2 uptake (+{rate_ph_hr:.2f} pH/hr). Biological equilibrium maintained."
+
+    # -------------------------------------------------------------
+    # Step D: MULTI-VARIATE KSPCB RULES & ANTI-ECLIPSING HARD CLAMP
+    # (Liebig's Law of the Minimum: A single toxic parameter forces RED)
+    # -------------------------------------------------------------
+    if acute_surge:
         status = "CRITICAL"
         color = "RED"
-        diagnosis = "KSPCB Class E Non-Compliance: Raw Sewage / Sullage Inflow detected (Concurrent TDS and Turbidity surge). Sensor drift ruled out."
-    elif ph > 8.8:
-        status = "ALERT"
-        color = "ORANGE"
-        diagnosis = "KSPCB Eutrophication Alert: Elevated pH indicates intense daylight CO2 depletion from micro-algae."
+        lhi = min(lhi, 32.0)
+        diagnosis = rate_diagnosis
+
+    # Anti-Eclipsing Single-Parameter Hard Clamp: Lethal Acid (<6.0)
     elif ph < 6.0:
         status = "CRITICAL"
         color = "RED"
-        diagnosis = "Industrial Acid Contamination: Hazardous low pH detected."
+        lhi = min(lhi, 28.0)
+        diagnosis = f"Industrial Acid Contamination (pH {ph:.2f}): Severe single-parameter lethal violation. Anti-eclipsing override active."
+
+    # Anti-Eclipsing Single-Parameter Hard Clamp: Extreme Caustic (>9.0)
+    elif ph > 9.0:
+        status = "CRITICAL"
+        color = "RED"
+        lhi = min(lhi, 32.0)
+        diagnosis = f"Severe Caustic Alkaline Surge (pH {ph:.2f}): Exceeds KSPCB safety ceiling. High toxicity risk."
+
+    # Concurrent Sewage / Sullage Inflow (TDS + Turbidity)
+    elif tds > 550 and turb > 35:
+        status = "CRITICAL"
+        color = "RED"
+        lhi = min(lhi, 38.0)
+        diagnosis = "KSPCB Class E Non-Compliance: Raw Sewage / Sullage Inflow detected (Concurrent TDS and Turbidity surge)."
+
+    # Anti-Eclipsing Single-Parameter Hard Clamp: Extreme Turbidity (>90 NTU)
+    elif turb > 90.0:
+        status = "CRITICAL"
+        color = "RED"
+        lhi = min(lhi, 35.0)
+        diagnosis = f"Severe Sludge / Sediment Breach ({turb:.1f} NTU): Complete light penetration collapse. Eclipsing override."
+
+    # Anti-Eclipsing Single-Parameter Hard Clamp: Extreme Dissolved Solids (>750 ppm)
+    elif tds > 750.0:
+        status = "CRITICAL"
+        color = "RED"
+        lhi = min(lhi, 35.0)
+        diagnosis = f"High Saline / Toxic Chemical Contamination (TDS {tds:.0f} ppm): Critical dissolved solute saturation."
+
+    # Moderate Diurnal or Eutrophic Alert (pH 8.4 - 9.0)
+    elif ph > 8.4:
+        status = "ALERT"
+        color = "ORANGE"
+        if rate_diagnosis:
+            diagnosis = rate_diagnosis
+        else:
+            diagnosis = "KSPCB Eutrophication Alert: Elevated pH indicates intense daylight CO2 depletion from micro-algae."
+
+    # Moderate Silt Runoff
     elif turb > 35:
         status = "ALERT"
         color = "ORANGE"
         diagnosis = "High Turbidity / Silt Runoff: Construction or storm drain sediment influx."
+
+    # Moderate High TDS
+    elif tds > 500:
+        status = "ALERT"
+        color = "ORANGE"
+        diagnosis = "Elevated Dissolved Solids: Mineral or drainage leachate deviation."
+
+    # Clean / Normal Water
     elif lhi >= 75.0:
         status = "NORMAL"
         color = "GREEN"
         diagnosis = "KSPCB Class C Compliant: Water quality within safe biological baseline. All parameters compliant."
+
     else:
         status = "ALERT"
         color = "ORANGE"
@@ -182,10 +267,41 @@ def ingest_telemetry(data: TelemetryPayload):
     if lake_id in ["bellandur", "buoy_1", "esp32", "quintessence"]:
         lake_id = "buoy1"
     now = datetime.datetime.now().isoformat()
-    ai_result = calculate_lhi_and_diagnosis(data.temp, data.ph, data.tds, data.turbidity)
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # Query previous telemetry to compute Rate of Change (d/dt)
+    cursor.execute("""
+        SELECT timestamp, temperature, ph, tds, turbidity 
+        FROM telemetry 
+        WHERE lake_id = ? 
+        ORDER BY id DESC LIMIT 1
+    """, (lake_id,))
+    prev = cursor.fetchone()
+    
+    rate_info = None
+    if prev:
+        try:
+            prev_time_str, prev_temp, prev_ph, prev_tds, prev_turb = prev
+            prev_dt = datetime.datetime.fromisoformat(prev_time_str)
+            curr_dt = datetime.datetime.fromisoformat(now)
+            delta_mins = (curr_dt - prev_dt).total_seconds() / 60.0
+            if 0.05 <= delta_mins <= 120.0:  # Valid comparison window between 3 sec and 2 hours
+                delta_ph = data.ph - prev_ph
+                rate_ph_per_hour = (delta_ph / delta_mins) * 60.0 if delta_mins > 0 else 0.0
+                rate_info = {
+                    "delta_mins": delta_mins,
+                    "delta_ph": delta_ph,
+                    "rate_ph_per_hour": rate_ph_per_hour,
+                    "delta_tds": data.tds - prev_tds,
+                    "delta_turb": data.turbidity - prev_turb
+                }
+        except Exception:
+            pass
+
+    ai_result = calculate_lhi_and_diagnosis(data.temp, data.ph, data.tds, data.turbidity, rate_info)
+    
     cursor.execute("""
         INSERT INTO telemetry (lake_id, timestamp, temperature, ph, tds, turbidity, lhi, status, color, diagnosis)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

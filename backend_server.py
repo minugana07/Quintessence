@@ -1,4 +1,6 @@
 import os
+import json
+import urllib.request
 import sqlite3
 import datetime
 from typing import Optional, List
@@ -407,6 +409,57 @@ def create_bbmp_ticket(ticket: TicketPayload):
         "message": f"Inspection ticket {ticket_id} created and dispatched to Ward Assistant Executive Engineer (AEE)."
     }
 
+def get_gemini_api_key():
+    key = os.getenv("GEMINI_API_KEY")
+    if not key or key == "your_gemini_api_key_here":
+        env_file = os.path.join(os.path.dirname(__file__), ".env")
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("GEMINI_API_KEY=") and not line.startswith("#"):
+                            val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                            if val and val != "your_gemini_api_key_here":
+                                return val
+            except Exception:
+                pass
+    return key if key and key != "your_gemini_api_key_here" else None
+
+def call_gemini_llm(system_instruction: str, user_question: str, api_key: str) -> Optional[str]:
+    # Primary: Gemini 2.5 Flash / Secondary: Gemini 1.5 Flash
+    models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "contents": [
+            {
+                "parts": [{"text": user_question}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.35,
+            "maxOutputTokens": 700
+        }
+    }
+    data = json.dumps(payload).encode("utf-8")
+    
+    for model_name in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                res_body = json.loads(response.read().decode("utf-8"))
+                candidates = res_body.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[0].get("text", "").strip()
+        except Exception:
+            continue
+    return None
+
 @app.post("/api/copilot")
 def query_copilot(query: CopilotQuery):
     conn = sqlite3.connect(DB_PATH)
@@ -423,10 +476,35 @@ def query_copilot(query: CopilotQuery):
     conn.close()
     
     if not latest:
-        return {"answer": f"No telemetry has been logged yet for {lake['name']}. Start simulate_esp32.py to stream live sensor data."}
+        return {"answer": f"No telemetry has been logged yet for {lake['name']}. Deploy ESP32 or stream readings to begin AI analysis."}
         
     temp, ph, tds, turb = latest["temperature"], latest["ph"], latest["tds"], latest["turbidity"]
     lhi, status = latest["lhi"], latest["status"]
+    
+    # 1. Check if user configured Gemini API Key in .env
+    api_key = get_gemini_api_key()
+    if api_key:
+        sys_prompt = (
+            f"You are the Quintessence AI Lake Analyst Copilot for Bengaluru Lakes (BBMP & KSPCB environmental monitoring).\n"
+            f"Current Lake: {lake['name']} (Ward: {lake['ward_name']})\n"
+            f"Live Buoy Telemetry:\n"
+            f"- Water Temperature: {temp} °C\n"
+            f"- pH: {ph} (KSPCB Class C safe range: 6.5 - 8.5)\n"
+            f"- TDS (Dissolved Solids): {tds} ppm (Class C lake limit: <500 ppm, Severe pollution: >750 ppm)\n"
+            f"- Turbidity: {turb} NTU (Clean lake baseline: <8 NTU, Silt/storm runoff: >35 NTU, Sludge plume: >90 NTU)\n"
+            f"- Composite Lake Health Index (LHI): {lhi}/100\n"
+            f"- Current Alert Status: {status} ({lake['color']})\n"
+            f"- Diagnostic Engine Note: {latest['diagnosis']}\n\n"
+            f"Role & Instructions:\n"
+            f"Answer the user's question directly with concise, authoritative environmental science analysis. "
+            f"Reference the live telemetry readings to explain the cause, toxicity to aquatic fauna/flora, and actionable steps for BBMP engineers. "
+            f"Format response with bullet points and bold headers for clarity."
+        )
+        gemini_reply = call_gemini_llm(sys_prompt, query.question, api_key)
+        if gemini_reply:
+            return {"answer": f"🤖 **Gemini AI Analyst:**\n\n{gemini_reply}"}
+
+    # 2. Local Fallback Domain-Expert Engine (Used if Gemini API key is absent or offline)
     q = query.question.lower()
     
     if "why" in q or "status" in q or "reason" in q or "wrong" in q or "problem" in q:

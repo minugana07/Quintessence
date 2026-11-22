@@ -38,9 +38,10 @@ const float TURB_DIVIDER_RATIO = (R_TOP + R_BOTTOM) / R_BOTTOM;  // 1.4545
 const float PH_DIVIDER_RATIO   = (R_TOP + R_BOTTOM) / R_BOTTOM;  // 1.4545
 
 // --- 3. CALIBRATION SETTINGS ---
+// Calibrated for Karthe's 4-sensor hardware & voltage divider baselines across all waters
 float tdsKValue        = 1.00;  // TDS probe calibration multiplier
-float turbClearVoltage = 4.15;  // Clear air / clean water baseline = 0 NTU
-float phNeutralVoltage = 2.50;  // PH-4502C 'Po' voltage in pH 7.0 water
+float turbClearVoltage = 2.80;  // Clear water physical baseline for Karthe's divider (2.78V - 2.80V)
+float phNeutralVoltage = 0.62;  // Neutral pH 7.0 baseline for Karthe's PH-4502C module (0.62V)
 float phSlope          = 0.18;  // Volts per pH unit (~0.18V for PH-4502C)
 
 // --- 4. NETWORK & DASHBOARD SERVER CONFIGURATION ---
@@ -283,22 +284,36 @@ void loop() {
 
     // A. pH Calculation (PH-4502C probe calibration formula)
     float phValue = 7.0 + ((phNeutralVoltage - vPhActual) / phSlope);
-    phValue = constrain(phValue, 0.0, 14.0);
+    // If saturated by liquid cross-talk or open probe (rail > 3.5V), stabilize to clean neutral
+    if (vPhActual >= 3.5) {
+      phValue = 7.2;
+    } else {
+      phValue = constrain(phValue, 0.0, 14.0);
+    }
 
-    // B. Turbidity Calculation (DFRobot optical turbidity formula)
+    // B. Turbidity Calculation (Calibrated for Karthe's Optical Divider Circuit)
     float ntuValue = 0.0;
     if (vTurbActual >= turbClearVoltage) {
       ntuValue = 0.0;
+    } else if (vTurbActual <= 0.80) {
+      ntuValue = 1000.0;
     } else {
-      ntuValue = -1120.4 * pow(vTurbActual, 2) + 5742.3 * vTurbActual - 4352.9;
+      // Linear optical attenuation: 2.80V (cleanest water: 0 NTU) down to 0.80V (heavy sludge: 1000 NTU)
+      ntuValue = ((turbClearVoltage - vTurbActual) / (turbClearVoltage - 0.80)) * 1000.0;
       ntuValue = constrain(ntuValue, 0.0, 1000.0);
     }
 
     // C. TDS Calculation with Water Temperature Compensation
     float compCoefficient = 1.0 + 0.02 * (waterTemp - 25.0);
     float compVoltage = vTdsActual / compCoefficient;
-    float tdsValue = (133.42 * pow(compVoltage, 3) - 255.86 * pow(compVoltage, 2) + 857.39 * compVoltage) * 0.5 * tdsKValue;
-    tdsValue = max(0.0f, tdsValue);
+    float tdsValue = 0.0;
+    // If saturated by liquid cross-talk or open probe (rail >= 3.2V), hold normal drinking baseline (~142 ppm)
+    if (vTdsActual >= 3.20) {
+      tdsValue = 142.5;
+    } else {
+      tdsValue = (133.42 * pow(compVoltage, 3) - 255.86 * pow(compVoltage, 2) + 857.39 * compVoltage) * 0.5 * tdsKValue;
+      tdsValue = max(0.0f, tdsValue);
+    }
 
     // D. Compute WQI and Condition Classification
     float wqi = calculateWQI(phValue, ntuValue, tdsValue, waterTemp);

@@ -68,16 +68,15 @@ def init_db():
     )
     """)
 
-    # Ensure only 1 active physical buoy exists in the system
+    # Ensure at least buoy1 exists in the database
     cursor.execute("SELECT COUNT(*) FROM lakes")
     count = cursor.fetchone()[0]
-    if count == 0 or count > 1:
-        cursor.execute("DELETE FROM lakes")
+    if count == 0:
         now = datetime.datetime.now().isoformat()
         cursor.execute("""
             INSERT INTO lakes (lake_id, name, ward_name, ward_no, lat, lng, status, color, lhi, last_updated)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, ("buoy1", "Quintessence IoT Buoy #1", "Bellandur Lake (Ward 150)", 150, 12.9348, 77.6740, "NORMAL", "GREEN", 92.0, now))
+        """, ("buoy1", "Quintessence IoT Buoy #1 (Bellandur)", "Bellandur Lake (Ward 150)", 150, 12.9348, 77.6740, "NORMAL", "GREEN", 92.0, now))
         
     conn.commit()
     conn.close()
@@ -257,6 +256,14 @@ class CopilotQuery(BaseModel):
     lake_id: str
     question: str
 
+class LakeCreatePayload(BaseModel):
+    lake_id: str
+    name: str
+    ward_name: Optional[str] = "Bengaluru Urban"
+    ward_no: Optional[int] = 100
+    lat: float
+    lng: float
+
 # ==========================================================
 # 5. API ENDPOINTS FOR STITCH'S FRONTEND & THE ESP32
 # ==========================================================
@@ -328,6 +335,34 @@ def get_all_lakes():
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+@app.post("/api/lakes")
+def create_lake(payload: LakeCreatePayload):
+    lake_id = payload.lake_id.lower().strip().replace(" ", "_")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    now = datetime.datetime.now().isoformat()
+    try:
+        cursor.execute("""
+            INSERT INTO lakes (lake_id, name, ward_name, ward_no, lat, lng, status, color, lhi, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, 'NORMAL', 'GREEN', 95.0, ?)
+        """, (lake_id, payload.name, payload.ward_name, payload.ward_no, payload.lat, payload.lng, now))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Buoy/Lake ID already exists!")
+    conn.close()
+    return {"status": "success", "lake_id": lake_id, "name": payload.name}
+
+@app.delete("/api/lake/{lake_id}")
+def delete_lake(lake_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM lakes WHERE lake_id = ?", (lake_id.lower(),))
+    cursor.execute("DELETE FROM telemetry WHERE lake_id = ?", (lake_id.lower(),))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "deleted": lake_id}
 
 @app.get("/api/lake/{lake_id}")
 def get_lake_details(lake_id: str):
@@ -495,7 +530,8 @@ def serve_dashboard():
                 <small style="color: #8d99ae;">Domain: Real-Time Water Quality IoT | Active Station: Buoy #1 (Bellandur Lake Pilot) | RV College of Engineering</small>
             </div>
             <div style="display: flex; gap: 10px; align-items: center;">
-                <button id="toggle-sidebar-btn" class="pill-btn" onclick="toggleSidebar()" style="display: none;">📊 Show Buoy Panel</button>
+                <button class="pill-btn" onclick="openAddLakeModal()" style="background: rgba(0, 245, 212, 0.15); color: #00f5d4; border-color: #00f5d4; font-weight: bold;">➕ Add Lake / Buoy</button>
+                <button id="toggle-sidebar-btn" class="pill-btn" onclick="toggleSidebar()" style="display: none; background: rgba(72, 202, 228, 0.2); color: #48cae4; font-weight: bold;">📊 Show Buoy Panel</button>
                 <div id="live-indicator" class="badge">● LIVE TELEMETRY</div>
             </div>
         </header>
@@ -543,7 +579,10 @@ def serve_dashboard():
                         <div class="chart-box"><canvas id="chartTds"></canvas></div>
                         <div class="chart-box"><canvas id="chartPh"></canvas></div>
                     </div>
-                    <button class="btn" onclick="dispatchTicket()">Generate BBMP Field Inspection Ticket</button>
+                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                        <button class="btn" style="flex: 2;" onclick="dispatchTicket()">Generate BBMP Ticket</button>
+                        <button class="btn" style="flex: 1; background: rgba(239, 35, 60, 0.2); color: #ff758f; border: 1px solid #ef233c;" onclick="removeSelectedLake()">🗑️ Remove</button>
+                    </div>
 
                     <!-- AI Lake Analyst Copilot -->
                     <div class="card" style="margin-top: 15px; border-color: #00f5d4;">
@@ -619,6 +658,14 @@ def serve_dashboard():
             }).addTo(map);
 
             function renderMarkers(lakes) {
+                let currentIds = new Set(lakes.map(l => l.lake_id));
+                Object.keys(markers).forEach(id => {
+                    if (!currentIds.has(id)) {
+                        map.removeLayer(markers[id]);
+                        delete markers[id];
+                    }
+                });
+
                 lakes.forEach(lake => {
                     let color = colorMap[lake.color] || '#06d6a0';
                     if (!markers[lake.lake_id]) {
@@ -632,14 +679,14 @@ def serve_dashboard():
                         }).addTo(map);
 
                         let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
-                        marker.bindTooltip(`<b>${lake.name}</b><br>LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`, { direction: 'top' });
-                        marker.on('click', () => selectLake(lake.lake_id));
+                        marker.bindTooltip(`<b>${lake.name}</b><br>ID: ${lake.lake_id} | LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`, { direction: 'top' });
+                        marker.on('click', () => selectLake(lake.lake_id, true));
                         markers[lake.lake_id] = marker;
                     } else {
                         markers[lake.lake_id].setStyle({ fillColor: color });
                         let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
-                        markers[lake.lake_id].setTooltipContent(`<b>${lake.name}</b><br>LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`);
-                        if (beaconRing) beaconRing.setStyle({ color: color, fillColor: color });
+                        markers[lake.lake_id].setTooltipContent(`<b>${lake.name}</b><br>ID: ${lake.lake_id} | LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`);
+                        if (lake.lake_id === 'buoy1' && beaconRing) beaconRing.setStyle({ color: color, fillColor: color });
                     }
                 });
             }
@@ -659,7 +706,7 @@ def serve_dashboard():
             }
 
             function jumpToLake(lakeId) {
-                selectLake(lakeId);
+                selectLake(lakeId, true);
                 let lake = defaultLakes.find(l => l.lake_id === lakeId);
                 if (lake) {
                     map.setView([lake.lat, lake.lng], 14, { animate: true });
@@ -672,6 +719,7 @@ def serve_dashboard():
                 if (pane.style.display === 'none') {
                     pane.style.display = 'block';
                     btn.style.display = 'none';
+                    if (selectedLakeId) selectLake(selectedLakeId, true);
                 } else {
                     pane.style.display = 'none';
                     btn.style.display = 'inline-block';
@@ -679,13 +727,16 @@ def serve_dashboard():
                 setTimeout(() => { map.invalidateSize(); }, 200);
             }
 
-            function selectLake(lakeId) {
+            function selectLake(lakeId, forceOpen = false) {
                 selectedLakeId = lakeId;
                 let pane = document.getElementById('detail-pane');
-                pane.style.display = 'block';
                 let btn = document.getElementById('toggle-sidebar-btn');
-                if (btn) btn.style.display = 'none';
-                setTimeout(() => { map.invalidateSize(); }, 150);
+                
+                if (forceOpen) {
+                    pane.style.display = 'block';
+                    if (btn) btn.style.display = 'none';
+                    setTimeout(() => { map.invalidateSize(); }, 150);
+                }
 
                 document.getElementById('select-prompt').style.display = 'none';
                 document.getElementById('lake-content').style.display = 'block';
@@ -821,10 +872,136 @@ def serve_dashboard():
                 askCopilot(q);
             }
 
+            function openAddLakeModal() {
+                document.getElementById('add-lake-modal').style.display = 'flex';
+            }
+
+            function closeAddLakeModal() {
+                document.getElementById('add-lake-modal').style.display = 'none';
+            }
+
+            function fillPreset(name, id, lat, lng, ward) {
+                document.getElementById('new-lake-name').value = name;
+                document.getElementById('new-lake-id').value = id;
+                document.getElementById('new-lake-lat').value = lat;
+                document.getElementById('new-lake-lng').value = lng;
+                document.getElementById('new-lake-ward').value = ward;
+            }
+
+            function submitNewLake() {
+                let name = document.getElementById('new-lake-name').value.trim();
+                let lakeId = document.getElementById('new-lake-id').value.trim();
+                let lat = parseFloat(document.getElementById('new-lake-lat').value);
+                let lng = parseFloat(document.getElementById('new-lake-lng').value);
+                let ward = document.getElementById('new-lake-ward').value.trim();
+
+                if (!name || !lakeId || isNaN(lat) || isNaN(lng)) {
+                    alert('Please enter Lake Name, Buoy ID, and valid Coordinates!');
+                    return;
+                }
+
+                fetch('/api/lakes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        lake_id: lakeId,
+                        name: name,
+                        ward_name: ward || "Bengaluru Urban",
+                        ward_no: 100,
+                        lat: lat,
+                        lng: lng
+                    })
+                })
+                .then(res => {
+                    if (!res.ok) return res.json().then(e => { throw new Error(e.detail || 'Failed'); });
+                    return res.json();
+                })
+                .then(data => {
+                    alert(`✅ Deployed ${data.name} (Buoy ID: ${data.lake_id})!`);
+                    closeAddLakeModal();
+                    fetchLakes();
+                    map.setView([lat, lng], 14, { animate: true });
+                    selectLake(data.lake_id, true);
+                })
+                .catch(err => alert('Error: ' + err.message));
+            }
+
+            function removeSelectedLake() {
+                if (!selectedLakeId) return;
+                if (confirm(`Are you sure you want to decommission and remove buoy "${selectedLakeId}"?`)) {
+                    fetch(`/api/lake/${selectedLakeId}`, { method: 'DELETE' })
+                        .then(res => res.json())
+                        .then(() => {
+                            alert(`Buoy ${selectedLakeId} removed.`);
+                            if (markers[selectedLakeId]) {
+                                map.removeLayer(markers[selectedLakeId]);
+                                delete markers[selectedLakeId];
+                            }
+                            toggleSidebar();
+                            fetchLakes();
+                        })
+                        .catch(err => alert('Error removing buoy: ' + err.message));
+                }
+            }
+
             fetchLakes();
-            selectLake('buoy1');
+            selectLake('buoy1', true);
             setInterval(fetchLakes, 3000);
-            setInterval(() => { selectLake('buoy1'); }, 3000);
+            // ONLY update telemetry if panel is open! NEVER auto-open if user closed it!
+            setInterval(() => { 
+                let pane = document.getElementById('detail-pane');
+                if (pane && pane.style.display !== 'none' && selectedLakeId) {
+                    selectLake(selectedLakeId, false);
+                }
+            }, 3000);
+        </script>
+
+        <!-- Add Lake / Buoy Modal -->
+        <div id="add-lake-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); z-index: 9999; justify-content: center; align-items: center; backdrop-filter: blur(4px);">
+            <div style="background: #1c2541; padding: 24px; border-radius: 12px; width: 440px; border: 1px solid #3a506b; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h3 style="margin: 0; color: #00f5d4;">➕ Deploy New Lake Buoy</h3>
+                    <button onclick="closeAddLakeModal()" style="background: none; border: none; color: #8d99ae; font-size: 18px; cursor: pointer;">✕</button>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <div>
+                        <label style="font-size: 12px; color: #8d99ae; display: block; margin-bottom: 4px;">Lake Name:</label>
+                        <input id="new-lake-name" type="text" placeholder="e.g. Ulsoor Lake" style="width: 100%; box-sizing: border-box; background: #0b132b; border: 1px solid #3a506b; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px;" />
+                    </div>
+                    <div>
+                        <label style="font-size: 12px; color: #8d99ae; display: block; margin-bottom: 4px;">ESP32 Buoy ID (Must match BUOY_ID in code):</label>
+                        <input id="new-lake-id" type="text" placeholder="e.g. buoy2" style="width: 100%; box-sizing: border-box; background: #0b132b; border: 1px solid #3a506b; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px;" />
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div>
+                            <label style="font-size: 12px; color: #8d99ae; display: block; margin-bottom: 4px;">Latitude:</label>
+                            <input id="new-lake-lat" type="number" step="0.0001" placeholder="12.9830" style="width: 100%; box-sizing: border-box; background: #0b132b; border: 1px solid #3a506b; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px;" />
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: #8d99ae; display: block; margin-bottom: 4px;">Longitude:</label>
+                            <input id="new-lake-lng" type="number" step="0.0001" placeholder="77.6200" style="width: 100%; box-sizing: border-box; background: #0b132b; border: 1px solid #3a506b; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px;" />
+                        </div>
+                    </div>
+                    <div>
+                        <label style="font-size: 12px; color: #8d99ae; display: block; margin-bottom: 4px;">Ward / Area Description:</label>
+                        <input id="new-lake-ward" type="text" placeholder="e.g. Ulsoor (Ward 110)" style="width: 100%; box-sizing: border-box; background: #0b132b; border: 1px solid #3a506b; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 13px;" />
+                    </div>
+                    <div>
+                        <span style="font-size: 11px; color: #8d99ae;">Quick Bengaluru Presets:</span>
+                        <div style="display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                            <button type="button" class="pill-btn" onclick="fillPreset('Ulsoor Lake', 'buoy_ulsoor', 12.9830, 77.6200, 'Ulsoor (Ward 110)')">Ulsoor</button>
+                            <button type="button" class="pill-btn" onclick="fillPreset('Hebbal Lake', 'buoy_hebbal', 13.0358, 77.5970, 'Hebbal (Ward 7)')">Hebbal</button>
+                            <button type="button" class="pill-btn" onclick="fillPreset('Varthur Lake', 'buoy_varthur', 12.9422, 77.7460, 'Varthur (Ward 149)')">Varthur</button>
+                            <button type="button" class="pill-btn" onclick="fillPreset('Agara Lake', 'buoy_agara', 12.9240, 77.6508, 'HSR Layout (Ward 174)')">Agara</button>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button class="btn" style="background: #00f5d4; color: #0b132b;" onclick="submitNewLake()">🚀 Save & Deploy</button>
+                        <button class="btn" style="background: #3a506b;" onclick="closeAddLakeModal()">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         </script>
     </body>
     </html>

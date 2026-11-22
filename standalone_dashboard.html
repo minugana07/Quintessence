@@ -158,8 +158,8 @@
     </div>
 
     <script>
-        // 1. Initialize Map Focused on Quintessence Buoy #1 at Bellandur Lake
-        let map = L.map('map-pane', { zoomControl: true }).setView([12.9348, 77.6740], 14);
+        // 1. Initialize Map Focused on DB Buoy Coordinates
+        let map = L.map('map-pane', { zoomControl: true }).setView([12.9239, 77.4997], 15);
 
         // 2. OpenStreetMap Layer (Zero Watermarks, Ultra Fast, 100% Free)
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -181,6 +181,8 @@
         let selectedLakeId = 'buoy1';
         let chartTdsInst = null;
         let chartPhInst = null;
+        let beaconRing = null;
+        let initialCentered = false;
 
         const colorMap = {
             'RED': '#ef233c',
@@ -188,21 +190,6 @@
             'GREEN': '#06d6a0',
             'YELLOW': '#ffd166'
         };
-
-        // Single physical hardware buoy deployed at pilot station
-        const defaultLakes = [
-            { lake_id: 'buoy1', name: 'Quintessence IoT Buoy #1 (Bellandur Lake)', lat: 12.9348, lng: 77.6740, color: 'GREEN', lhi: 92.0, status: 'NORMAL' }
-        ];
-
-        // Outer radar beacon ping ring for Buoy #1
-        let beaconRing = L.circleMarker([12.9348, 77.6740], {
-            radius: 24,
-            color: '#00f5d4',
-            weight: 1.5,
-            opacity: 0.7,
-            fillColor: '#00f5d4',
-            fillOpacity: 0.12
-        }).addTo(map);
 
         function renderMarkers(lakes) {
             let currentIds = new Set(lakes.map(l => l.lake_id));
@@ -230,16 +217,29 @@
                     marker.on('click', () => selectLake(lake.lake_id, true));
                     markers[lake.lake_id] = marker;
                 } else {
+                    markers[lake.lake_id].setLatLng([lake.lat, lake.lng]);
                     markers[lake.lake_id].setStyle({ fillColor: color });
                     let timeLabel = lake.last_updated ? new Date(lake.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Live';
                     markers[lake.lake_id].setTooltipContent(`<b>${lake.name}</b><br>ID: ${lake.lake_id} | LHI: ${lake.lhi} (${lake.status})<br><small style="color:#48cae4;">🕒 Measured: ${timeLabel}</small>`);
-                    if (lake.lake_id === 'buoy1' && beaconRing) beaconRing.setStyle({ color: color, fillColor: color });
+                }
+
+                if (lake.lake_id === selectedLakeId) {
+                    if (!beaconRing) {
+                        beaconRing = L.circleMarker([lake.lat, lake.lng], {
+                            radius: 24,
+                            color: color,
+                            weight: 1.5,
+                            opacity: 0.7,
+                            fillColor: color,
+                            fillOpacity: 0.12
+                        }).addTo(map);
+                    } else {
+                        beaconRing.setLatLng([lake.lat, lake.lng]);
+                        beaconRing.setStyle({ color: color, fillColor: color });
+                    }
                 }
             });
         }
-
-        // Render single buoy immediately
-        renderMarkers(defaultLakes);
 
         function fetchLakes() {
             fetch('http://localhost:8000/api/lakes')
@@ -247,6 +247,13 @@
                 .then(lakes => {
                     if (lakes && lakes.length > 0) {
                         renderMarkers(lakes);
+                        if (!initialCentered) {
+                            initialCentered = true;
+                            let target = lakes.find(l => l.lake_id === selectedLakeId) || lakes[0];
+                            if (target && target.lat && target.lng) {
+                                map.setView([target.lat, target.lng], 15);
+                            }
+                        }
                     }
                 })
                 .catch(err => console.error("Error fetching lakes:", err));
@@ -254,9 +261,8 @@
 
         function jumpToLake(lakeId) {
             selectLake(lakeId, true);
-            let lake = defaultLakes.find(l => l.lake_id === lakeId);
-            if (lake) {
-                map.setView([lake.lat, lake.lng], 14, { animate: true });
+            if (markers[lakeId]) {
+                map.setView(markers[lakeId].getLatLng(), 15, { animate: true });
             }
         }
 
@@ -293,6 +299,11 @@
                 .then(data => {
                     let meta = data.meta;
                     let latest = data.latest;
+
+                    if (meta && meta.lat && meta.lng && forceOpen) {
+                        map.panTo([meta.lat, meta.lng]);
+                        if (beaconRing) beaconRing.setLatLng([meta.lat, meta.lng]);
+                    }
 
                     document.getElementById('lake-title').innerText = meta.name;
                     document.getElementById('lake-ward').innerText = `Ward: ${meta.ward_name} (Ward No: ${meta.ward_no})`;
@@ -536,6 +547,7 @@
                     <div>
                         <span style="font-size: 11px; color: #8d99ae;">Quick Bengaluru Presets:</span>
                         <div style="display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                            <button type="button" class="pill-btn" onclick="fillPreset('RVCE Prototype', 'buoy1', 12.9239, 77.4997, 'RVCE Campus - Mysore Road')">🏫 RVCE</button>
                             <button type="button" class="pill-btn" onclick="fillPreset('Ulsoor Lake', 'buoy_ulsoor', 12.9830, 77.6200, 'Ulsoor (Ward 110)')">Ulsoor</button>
                             <button type="button" class="pill-btn" onclick="fillPreset('Hebbal Lake', 'buoy_hebbal', 13.0358, 77.5970, 'Hebbal (Ward 7)')">Hebbal</button>
                             <button type="button" class="pill-btn" onclick="fillPreset('Varthur Lake', 'buoy_varthur', 12.9422, 77.7460, 'Varthur (Ward 149)')">Varthur</button>

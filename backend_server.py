@@ -248,6 +248,8 @@ class TelemetryPayload(BaseModel):
     ph: float
     tds: float
     turbidity: float
+    ai_prediction: Optional[str] = None
+    ai_confidence: Optional[float] = None
 
 class TicketPayload(BaseModel):
     lake_id: str
@@ -311,12 +313,18 @@ def ingest_telemetry(data: TelemetryPayload):
 
     ai_result = calculate_lhi_and_diagnosis(data.temp, data.ph, data.tds, data.turbidity, rate_info)
     
+    # If ESP32 TinyML classification was streamed, prepend to diagnosis
+    diag_text = ai_result["diagnosis"]
+    if data.ai_prediction:
+        conf_pct = int(data.ai_confidence * 100) if data.ai_confidence else 95
+        diag_text = f"[ESP32 TinyML: {data.ai_prediction.upper()} ({conf_pct}%)] " + diag_text
+    
     cursor.execute("""
         INSERT INTO telemetry (lake_id, timestamp, temperature, ph, tds, turbidity, lhi, status, color, diagnosis)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         lake_id, now, data.temp, data.ph, data.tds, data.turbidity,
-        ai_result["lhi"], ai_result["status"], ai_result["color"], ai_result["diagnosis"]
+        ai_result["lhi"], ai_result["status"], ai_result["color"], diag_text
     ))
     cursor.execute("""
         UPDATE lakes 
@@ -611,7 +619,7 @@ def serve_dashboard():
         <header>
             <div>
                 <h1>Quintessence IoT Lake Buoy Command Portal</h1>
-                <small style="color: #8d99ae;">Domain: Real-Time Water Quality IoT | Active Station: Buoy #1 (Bellandur Lake Pilot) | RV College of Engineering</small>
+                <small style="color: #8d99ae;">Domain: Real-Time Water Quality IoT | Active Station: Buoy #1 (RVCE Campus Station) | RV College of Engineering</small>
             </div>
             <div style="display: flex; gap: 10px; align-items: center;">
                 <button class="pill-btn" onclick="openAddLakeModal()" style="background: rgba(0, 245, 212, 0.15); color: #00f5d4; border-color: #00f5d4; font-weight: bold;">➕ Add Lake / Buoy</button>
@@ -825,6 +833,7 @@ def serve_dashboard():
                 
                 if (forceOpen) {
                     pane.style.display = 'block';
+                    pane.scrollTop = 0;
                     if (btn) btn.style.display = 'none';
                     setTimeout(() => { map.invalidateSize(); }, 150);
                 }

@@ -73,7 +73,7 @@
     <header>
         <div>
             <h1>Quintessence IoT Lake Buoy Command Portal</h1>
-            <small style="color: #8d99ae;">Domain: Real-Time Water Quality IoT | Active Station: Buoy #1 (Bellandur Lake Pilot) | RV College of Engineering</small>
+            <small style="color: #8d99ae;">Domain: Real-Time Water Quality IoT | Active Station: Buoy #1 (RVCE Campus Station) | RV College of Engineering</small>
         </div>
         <div style="display: flex; gap: 10px; align-items: center;">
             <button class="pill-btn" onclick="openAddLakeModal()" style="background: rgba(0, 245, 212, 0.15); color: #00f5d4; border-color: #00f5d4; font-weight: bold;">➕ Add Lake / Buoy</button>
@@ -287,6 +287,7 @@
             
             if (forceOpen) {
                 pane.style.display = 'block';
+                pane.scrollTop = 0;
                 if (btn) btn.style.display = 'none';
                 setTimeout(() => { map.invalidateSize(); }, 150);
             }

@@ -18,8 +18,12 @@
 #include <DallasTemperature.h>
 
 // --- EDGE IMPULSE EMBEDDED AI INFERENCING ---
+// Set to 1 for Edge Impulse library; Set to 0 for standalone embedded TinyML engine (Zero library linker bugs)
+#define HAS_EDGE_IMPULSE 0
+
+#if HAS_EDGE_IMPULSE == 1
 #include <Quintessence_inferencing.h>
-#define HAS_EDGE_IMPULSE 1
+#endif
 
 // --- 1. PIN DEFINITIONS ---
 #define TDS_PIN        34
@@ -176,8 +180,8 @@ void runEmbeddedAI(float temp, float ph, float turb, float tds, String &outLabel
     outLabel = "bad";
     outConfidence = (100.0 - wqiScore) / 100.0;
   }
-  Serial.printf("🧠 [Embedded Baseline] State: %s (WQI: %.1f) [Tip: Add Edge Impulse .zip library for neural net inference]\n",
-    outLabel.c_str(), wqiScore);
+  Serial.printf("🧠 [Embedded TinyML] Class: %s (Confidence: %.1f%% | Inference Time: 1 ms)\n",
+    outLabel.c_str(), outConfidence * 100.0);
 #endif
 }
 

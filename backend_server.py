@@ -662,7 +662,7 @@ def serve_dashboard():
                             <div class="metric-box"><span>Turbidity</span><strong id="m-turb">-- NTU</strong></div>
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 1px solid #162447;">
-                            <span id="duty-cycle-badge" style="font-size: 11px; background: rgba(6, 214, 160, 0.15); color: #06d6a0; padding: 3px 8px; border-radius: 10px; font-weight: 500;">⏱️ Sampling Rate: 1 Hour (Normal)</span>
+                            <span id="duty-cycle-badge" style="font-size: 11px; background: rgba(0, 245, 212, 0.15); color: #00f5d4; padding: 3px 8px; border-radius: 10px; font-weight: 500;">⚡ Sampling Frequency: 1 Second (Real-Time Live)</span>
                             <small style="color: #8d99ae; font-size: 11px;">Telemetry Link: Active</small>
                         </div>
                     </div>
@@ -876,13 +876,13 @@ def serve_dashboard():
 
                             let dutyBadge = document.getElementById('duty-cycle-badge');
                             if (latest.status === 'CRITICAL' || latest.status === 'ALERT') {
-                                dutyBadge.style.background = 'rgba(255, 183, 3, 0.2)';
-                                dutyBadge.style.color = '#ffd166';
-                                dutyBadge.innerText = '⚡ Adaptive Mode: Every 15 Mins (Anomaly Active)';
+                                dutyBadge.style.background = 'rgba(239, 35, 60, 0.2)';
+                                dutyBadge.style.color = '#ff758f';
+                                dutyBadge.innerText = '🚨 Rapid Telemetry: 1 Second (Anomaly Alert Active)';
                             } else {
-                                dutyBadge.style.background = 'rgba(6, 214, 160, 0.15)';
-                                dutyBadge.style.color = '#06d6a0';
-                                dutyBadge.innerText = '⏱️ Sampling Rate: Every 1 Hour (Normal)';
+                                dutyBadge.style.background = 'rgba(0, 245, 212, 0.15)';
+                                dutyBadge.style.color = '#00f5d4';
+                                dutyBadge.innerText = '⚡ Sampling Frequency: 1 Second (Real-Time Live)';
                             }
                         } else if (meta.last_updated) {
                             let d = new Date(meta.last_updated);
@@ -1051,14 +1051,14 @@ def serve_dashboard():
 
             fetchLakes();
             selectLake('buoy1', true);
-            setInterval(fetchLakes, 3000);
+            setInterval(fetchLakes, 2500);
             // ONLY update telemetry if panel is open! NEVER auto-open if user closed it!
             setInterval(() => { 
                 let pane = document.getElementById('detail-pane');
                 if (pane && pane.style.display !== 'none' && selectedLakeId) {
                     selectLake(selectedLakeId, false);
                 }
-            }, 3000);
+            }, 1500);
         </script>
 
         <!-- Add Lake / Buoy Modal -->

@@ -59,8 +59,8 @@ float phSlope          = 0.18;  // Volts per pH unit (~0.18V for PH-4502C)
 
 // --- 4. NETWORK & DASHBOARD SERVER CONFIGURATION ---
 // ⚠️ Set your WiFi/Hotspot credentials below:
-const char* WIFI_SSID     = "YOUR_WIFI_OR_HOTSPOT";  // Change to your phone hotspot or Wi-Fi
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";    // Hotspot password
+const char* WIFI_SSID     = "Oneplus Nord Minu";  // Change to your phone hotspot or Wi-Fi
+const char* WIFI_PASSWORD = "minuwireless123";    // Hotspot password
 
 // ⚠️ Put your laptop's Wi-Fi IPv4 address here:
 // Current detected laptop Wi-Fi IP: 172.17.8.142
@@ -73,7 +73,7 @@ const char* BUOY_ID       = "buoy1";
 // --- 5. FILTERING & TIMING ---
 #define SAMPLE_COUNT     30
 #define SAMPLE_INTERVAL  40     // Read analog sensors every 40 ms
-#define PRINT_INTERVAL   2000   // Run AI and send readings every 2000 ms (2 seconds)
+#define PRINT_INTERVAL   1000   // Run AI and send readings every 1000 ms (1 second)
 
 int tdsBuffer[SAMPLE_COUNT];
 int turbBuffer[SAMPLE_COUNT];

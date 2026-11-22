@@ -550,8 +550,8 @@ def serve_dashboard():
             header { background: #1c2541; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3a506b; flex-shrink: 0; }
             header h1 { margin: 0; font-size: 20px; color: #48cae4; }
             .badge { background: #ff4d4d; color: white; padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 13px; }
-            .container { display: flex; flex: 1; height: calc(100vh - 65px); width: 100vw; overflow: hidden; }
-            #map-pane { flex: 1; height: 100%; min-height: 450px; background: #0b132b; position: relative; }
+            .container { display: flex; flex: 1; height: calc(100vh - 65px); width: 100vw; overflow: hidden; position: relative; }
+            #map-pane { flex: 1; height: 100%; min-height: 450px; background: #0b132b; position: relative; overflow: hidden; z-index: 1; }
             /* Zero-Watermark Dark Modes for OpenStreetMap */
             #map-pane.cyber-dark .leaflet-tile-pane {
                 filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7);
@@ -564,6 +564,12 @@ def serve_dashboard():
             }
             #detail-pane {
                 width: 520px;
+                min-width: 520px;
+                max-width: 520px;
+                flex-shrink: 0;
+                box-sizing: border-box;
+                position: relative;
+                z-index: 1005;
                 height: 100%;
                 background: #1c2541;
                 padding: 20px;
@@ -701,6 +707,7 @@ def serve_dashboard():
 
             function setMapTheme(theme) {
                 document.getElementById('map-pane').className = theme;
+                setTimeout(() => { map.invalidateSize(); }, 50);
             }
 
             // 3. Force container size recalculation to guarantee immediate rendering
